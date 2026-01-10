@@ -28,7 +28,7 @@ created.
 package game
 
 import "core:fmt"
-// import "core:math"
+import "core:math"
 import "core:math/linalg"
 import rl "vendor:raylib"
 
@@ -42,12 +42,22 @@ Edit_Mode :: enum {
 }
 
 Particle :: struct {
-    force : [2]f64,
-    position_old : [2]f64,
-    position : [2]f64,
+    force : [3]f64,
+    position_old : [3]f64,
+    position : [3]f64,
+    angular_position: [3]f64,
+    angular_position_old: [3]f64,
     mass: f64,
     radius: f64,
 }
+
+Link :: struct {
+    p: int,
+    p1: int,
+    length: f64,
+}
+
+Super_Particle :: [4]Link
 
 PID_Controller :: struct {
     Kp: f64,
@@ -59,16 +69,186 @@ PID_Controller :: struct {
     output: f64,
 }
 
-Game_Memory :: struct {
-	run: bool,
+Game_2D :: struct {
     particles: [2]Particle,
     level: f64,
     pid: PID_Controller,
     edit: Edit_Mode,
+}
+
+Game_3D :: struct {
+    drone: Super_Particle,
+    particles : [4]Particle,
+    camera: rl.Camera3D,
+    gyro : [3]f64,
+    pid : [3]PID_Controller,
+}
+
+Game_Memory :: struct {
+	run: bool,
+    g2d : Game_2D,
+    g3d : Game_3D,
     dt: f64,
 }
 
 g: ^Game_Memory
+
+// DrawTextCodepoint3D :: proc(font: rl.Font, codepoint: int, position: [3]f32, fontSize: f32, backface: bool, tint: rl.Color) {
+//     position := position
+//     // Character index position in sprite font
+//     // NOTE: In case a codepoint is not available in the font, index returned points to '?'
+//     index := rl.GetGlyphIndex(font, cast(rune)codepoint)
+//     scale := fontSize / cast(f32)font.baseSize
+
+//     // Character destination rectangle on screen
+//     // NOTE: We consider charsPadding on drawing
+//     position.x += cast(f32)(font.glyphs[index].offsetX - font.glyphPadding)*scale
+//     position.z += cast(f32)(font.glyphs[index].offsetY - font.glyphPadding)*scale
+
+//     // Character source rectangle from font texture atlas
+//     // NOTE: We consider chars padding when drawing, it could be required for outline/glow shader effects
+//     srcRec := rl.Rectangle{ font.recs[index].x - cast(f32)font.glyphPadding, font.recs[index].y - cast(f32)font.glyphPadding,
+//                             font.recs[index].width + 2.0*cast(f32)font.glyphPadding, font.recs[index].height + 2.0*cast(f32)font.glyphPadding }
+
+//     width := (font.recs[index].width + 2.0*cast(f32)font.glyphPadding)*scale
+//     height := (font.recs[index].height + 2.0*cast(f32)font.glyphPadding)*scale
+
+//     if (font.texture.id > 0) {
+//         x := 0.0
+//         y := 0.0
+//         z := 0.0
+
+//         // normalized texture coordinates of the glyph inside the font texture (0.0f -> 1.0f)
+//         tx := srcRec.x/cast(f32)font.texture.width
+//         ty := srcRec.y/cast(f32)font.texture.height
+//         tw := (srcRec.x+srcRec.width)/cast(f32)font.texture.width
+//         th := (srcRec.y+srcRec.height)/cast(f32)font.texture.height
+
+//         SHOW_LETTER_BOUNDARY :: false
+//         SHOW_TEXT_BOUNDARY :: false
+//         LETTER_BOUNDRY_SIZE :: 0.25
+//         TEXT_MAX_LAYERS :: 32
+//         LETTER_BOUNDRY_COLOR :: rl.VIOLET
+        
+//         if SHOW_LETTER_BOUNDARY do rl.DrawCubeWiresV(rl.Vector3{ position.x + width/2, position.y, position.z + height/2}, rl.Vector3{ width, LETTER_BOUNDRY_SIZE, height }, LETTER_BOUNDRY_COLOR)
+
+//         rl.CheckRenderBatchLimit(4 + 4*backface)
+//         rl.rlSetTexture(font.texture.id)
+
+//         rl.rlPushMatrix()
+//         rlTranslatef(position.x, position.y, position.z)
+
+//         rlBegin(RL_QUADS)
+//         rlColor4ub(tint.r, tint.g, tint.b, tint.a)
+
+//         // Front Face
+//         rlNormal3f(0.0, 1.0, 0.0)                                   // Normal Pointing Up
+//         rlTexCoord2f(tx, ty); rlVertex3f(x,         y, z)              // Top Left Of The Texture and Quad
+//         rlTexCoord2f(tx, th); rlVertex3f(x,         y, z + height)     // Bottom Left Of The Texture and Quad
+//         rlTexCoord2f(tw, th); rlVertex3f(x + width, y, z + height)     // Bottom Right Of The Texture and Quad
+//         rlTexCoord2f(tw, ty); rlVertex3f(x + width, y, z)              // Top Right Of The Texture and Quad
+
+//         if backface {
+//             // Back Face
+//             rlNormal3f(0.0, -1.0, 0.0)                              // Normal Pointing Down
+//             rlTexCoord2f(tx, ty)
+//             rlVertex3f(x,         y, z)          // Top Right Of The Texture and Quad
+//             rlTexCoord2f(tw, ty)
+//             rlVertex3f(x + width, y, z)          // Top Left Of The Texture and Quad
+//             rlTexCoord2f(tw, th)
+//             rlVertex3f(x + width, y, z + height) // Bottom Left Of The Texture and Quad
+//             rlTexCoord2f(tx, th)
+//             rlVertex3f(x,         y, z + height) // Bottom Right Of The Texture and Quad
+//         }
+//         rlEnd()
+//         rlPopMatrix()
+
+//         rlSetTexture(0)
+//     }
+// }
+
+// // Draw a 2D text in 3D space
+// DrawText3D :: proc(font: rl.Font, text: cstring, position: [3]f32, fontSize: f32, fontSpacing: f32, lineSpacing: f32, backface: bool, tint: rl.Color) {
+//     length := rl.TextLength(text)          // Total length in bytes of the text, scanned by codepoints in loop
+
+//     textOffsetY := 0.0               // Offset between lines (on line break '\n')
+//     textOffsetX := 0.0               // Offset X to next character to draw
+
+//     scale := fontSize/cast(f32)font.baseSize
+
+//     for i := 0; i < length; {
+//         // Get next codepoint from byte string and glyph index in font
+//         codepointByteCount := 0
+//         codepoint := rl.GetCodepoint(&text[i], &codepointByteCount)
+//         index := rl.GetGlyphIndex(font, codepoint)
+
+//         // NOTE: Normally we exit the decoding sequence as soon as a bad byte is found (and return 0x3f)
+//         // but we need to draw all of the bad bytes using the '?' symbol moving one byte
+//         if codepoint == 0x3f do codepointByteCount = 1
+
+//         if codepoint == '\n' {
+//             // NOTE: Fixed line spacing of 1.5 line-height
+//             // TODO: Support custom line spacing defined by user
+//             textOffsetY += fontSize + lineSpacing
+//             textOffsetX = 0.0
+//         } else {
+//             if (codepoint != ' ') && (codepoint != '\t') {
+//                 rl.DrawTextCodepoint3D(font, codepoint, (rl.Vector3){ position.x + textOffsetX, position.y, position.z + textOffsetY }, fontSize, backface, tint)
+//             }
+
+//             if font.glyphs[index].advanceX == 0 do textOffsetX += cast(f32)font.recs[index].width*scale + fontSpacing
+//             else do textOffsetX += cast(f32)font.glyphs[index].advanceX*scale + fontSpacing
+//         }
+
+//         i += codepointByteCount   // Move text bytes counter to next codepoint
+//     }
+// }
+
+set_angular_position :: proc(ps: []Particle, sp: ^Super_Particle) {
+    ///////// AHH MAKE IT WORK IN 3D
+    // ugleh
+    // the location for the three particles in a super particle is specified in make_super_particle, at the bottom of the function
+    // p1 : ^Particle = &ps[sp[0].p]
+    // p2 : ^Particle = &ps[sp[1].p]
+    // p3 : ^Particle = &ps[sp[1].p1]
+
+    // a := sp[0].length
+    // b := sp[1].length
+    // c := sp[2].length
+    // center := (a * p3.position + b * p1.position + c * p2.position) / (a + b + c)
+
+    // straight := [3]f64 {center.x+1, center.y, center.z}
+
+    // ref := straight-center
+    // r1 := p1.position-center
+    // r2 := p2.position-center
+    // r3 := p3.position-center
+        
+    // temp := p1.angular_position
+    // p1.angular_position = math.mod(math.TAU + linalg.angle_between(r1, ref) * math.sign(linalg.cross(r1, ref)), math.TAU)
+    // p1.angular_position_old = temp
+
+    // temp = p2.angular_position
+    // p2.angular_position = math.mod(math.TAU + linalg.angle_between(r2, ref) * math.sign(linalg.cross(r2, ref)), math.TAU)
+    // p2.angular_position_old = temp
+
+    // temp = p3.angular_position
+    // p3.angular_position = math.mod(math.TAU + linalg.angle_between(r3, ref) * math.sign(linalg.cross(r3, ref)), math.TAU)
+    // p3.angular_position_old = temp
+}
+
+update_link :: proc(ps: []Particle, link : Link) {
+    p_pos := &ps[link.p].position
+    p1_pos := &ps[link.p1].position
+
+    diff := p_pos^ - p1_pos^
+    dist := linalg.length(diff)
+    diff_factor := (link.length - dist) / dist
+    offset := diff * diff_factor * 0.5
+
+    p_pos^ += offset
+    p1_pos^ -= offset
+}
 
 init_pid :: proc(using pid: ^PID_Controller) {
     Kp = 1000.0
@@ -95,15 +275,14 @@ update_pid :: proc(measured_value: f64, pid: ^PID_Controller) {
     pid.output += pid.A[0] * pid.error[0] + pid.A[1] * pid.error[1] + pid.A[2] * pid.error[2]
 }
 
-draw_pid_stats :: proc() {
-
-    str := fmt.caprintf("PID OUT: %f", g.pid.output)
+draw_pid_stats :: proc(pid: ^PID_Controller) {
+    str := fmt.caprintf("PID OUT: %f", pid.output)
     rl.DrawText(str, 200, 10, 20, rl.RED)
 
-    str = fmt.caprintf("PID ERR: %f", g.pid.error)
+    str = fmt.caprintf("PID ERR: %f", pid.error)
     rl.DrawText(str, 200, 30, 20, rl.BLACK)
 
-    str = fmt.caprintf("Kp: %f, Ki: %f, Kd: %f", g.pid.Kp, g.pid.Ki, g.pid.Kd)
+    str = fmt.caprintf("Kp: %f, Ki: %f, Kd: %f", pid.Kp, pid.Ki, pid.Kd)
     rl.DrawText(str, 200, 50, 20, rl.BLACK)
 }
 
@@ -117,7 +296,7 @@ update_particle :: proc(p: ^Particle) {
 }
 
 gravity :: proc(p: ^Particle) {
-    p.force += {0, 1000}
+    p.force += {0, 1000, 0}
 }
 
 handle_ground_collision :: proc(p: ^Particle) {
@@ -128,13 +307,13 @@ handle_ground_collision :: proc(p: ^Particle) {
 }
 
 update_level :: proc() {
-    a := g.particles[0].position
-    b := g.particles[1].position
-    g.level = linalg.atan2(abs(a.y - b.y), abs(a.x - b.x))
+    a := g.g2d.particles[0].position
+    b := g.g2d.particles[1].position
+    g.g2d.level = linalg.atan2(abs(a.y - b.y), abs(a.x - b.x))
 }
 
-update_particles :: proc() {
-    for &p in g.particles {
+update_particles :: proc(particles: []Particle) {
+    for &p in particles {
         gravity(&p)
         update_particle(&p)
         handle_ground_collision(&p)
@@ -142,9 +321,9 @@ update_particles :: proc() {
 }
 
 lowest_particle :: proc() -> (lowest: int) {
-    min_val := g.particles[0].position.y
+    min_val := g.g2d.particles[0].position.y
     
-    for p, i in g.particles {
+    for p, i in g.g2d.particles {
         // yeah yeah backwards suck my fat one
         if p.position.y > min_val {
             min_val = p.position.y
@@ -155,59 +334,154 @@ lowest_particle :: proc() -> (lowest: int) {
 }
 
 handle_pid :: proc() {
-    update_pid(g.level, &g.pid)
-    force := g.pid.output
+    update_pid(g.g2d.level, &g.g2d.pid)
+    force := g.g2d.pid.output
     i := lowest_particle()
-    g.particles[i].force += {0, force}
+    g.g2d.particles[i].force += {0, force, 0}
 }
 
-update :: proc() {
+update_2d :: proc() {
     update_level()
     handle_pid()
-    update_particles()
+    update_particles(g.g2d.particles[:])
 }
 
-draw :: proc() {
+draw_2d :: proc() {
 	rl.BeginDrawing()
 	rl.ClearBackground(rl.RAYWHITE)
-    for p in g.particles {
+    for p in g.g2d.particles {
         rl.DrawCircle(cast(i32)p.position.x, cast(i32)p.position.y, 10, rl.GREEN)
     }
-    rl.DrawText(rl.TextFormat("%f radian", g.level), 10, 10, 20, rl.BLACK)
-    draw_pid_stats()
-    rl.DrawText(fmt.caprintf("edit mode: %v", g.edit), 10, 30, 20, rl.GREEN)
+    rl.DrawText(rl.TextFormat("%f radian", g.g2d.level), 10, 10, 20, rl.BLACK)
+    draw_pid_stats(&g.g2d.pid)
+    rl.DrawText(fmt.caprintf("edit mode: %v", g.g2d.edit), 10, 30, 20, rl.GREEN)
 	rl.EndDrawing()
 }
 
 handle_input :: proc() {
     if (rl.IsKeyDown(.P)) {
-        g.edit = .Proportional
+        g.g2d.edit = .Proportional
     } else if (rl.IsKeyDown(.I)) {
-        g.edit = .Integral
+        g.g2d.edit = .Integral
     } else if (rl.IsKeyDown(.D)) {
-        g.edit = .Derivative
+        g.g2d.edit = .Derivative
     } else if (rl.IsKeyDown(.N)) {
-        g.edit = .None
+        g.g2d.edit = .None
     }
 
     mw := cast(f64)rl.GetMouseWheelMove() / 10.0
 
-    switch g.edit {
+    switch g.g2d.edit {
     case .Proportional:
-        g.pid.Kp += mw
+        g.g2d.pid.Kp += mw
     case .Integral:
-        g.pid.Ki += mw
+        g.g2d.pid.Ki += mw
     case .Derivative:
-        g.pid.Kd += mw
+        g.g2d.pid.Kd += mw
     case .None:
     }
 }
 
+update_gyro :: proc(g: ^Game_3D) {
+    a := g.particles[0].position
+    n := drone_normal(g)
+    c := drone_center(g)
+    g.gyro[0] = linalg.angle_between(n.yz, c.yz)
+    g.gyro[1] = linalg.angle_between(n.xz, c.xz)
+    g.gyro[2] = linalg.atan2(a.x, a.y) - math.PI / 4
+}
+
+handle_pid3d :: proc(g: ^Game_3D) {
+    // update_pid(g.gyro[0], &g.pid[0])
+    // update_pid(g.gyro[1], &g.pid[1])
+    
+    // pitch_force := g.pid[0].output
+    // roll_force := g.pid[1].output
+    // i := lowest_particle()
+    // g.g2d.particles[i].force += {0, force}
+}
+
+
+update_3d :: proc() {
+    rl.UpdateCamera(&g.g3d.camera, .FREE)
+    update_gyro(&g.g3d)
+    handle_pid3d(&g.g3d)
+    // update_particles(g.g3d.particles[:])
+    // for link in g.g3d.drone do update_link(g.g3d.particles[:], link)
+    // set_angular_position(g.g3d.particles[:], &g.g3d.drone)
+}
+
+draw_drone :: proc() {
+    for p in g.g3d.particles {
+        rl.DrawSphere({cast(f32)p.position.x, cast(f32)p.position.y, cast(f32)p.position.z}, cast(f32)p.radius, rl.GREEN)
+    }
+}
+
+draw_gyro :: proc(gyro: [3]f64) {
+    gyro_deg := gyro * 180 / math.PI
+    rl.DrawText(fmt.caprintf("Pitch: %v\nRoll:   %v\nYaw:   %v", gyro_deg.x, gyro_deg.y, gyro_deg.z), 10, 10, 20, rl.BLACK)
+}
+
+cast_f32 :: proc(a: [3]f64) -> [3]f32 {
+    return {cast(f32)a[0], cast(f32)a[1], cast(f32)a[2]}
+}
+
+drone_center :: proc(g: ^Game_3D) -> [3]f64 {
+    diff1 := g.particles[1].position - g.particles[0].position
+    diff2 := g.particles[2].position - g.particles[0].position
+
+    return g.particles[0].position + diff1/2 + diff2/2
+}
+
+drone_front :: proc(g: ^Game_3D) -> [3]f64 {
+    diff1 := g.particles[1].position - g.particles[0].position
+    return g.particles[0].position + diff1/2
+}
+
+drone_normal :: proc(g: ^Game_3D) -> [3]f64 {
+    // the positions of the particle should be determined by the normal, not the other way around
+    c := drone_center(g)
+    a := g.particles[0].position - c
+    b := g.particles[1].position - c
+    return linalg.normalize(linalg.cross(a, b))
+}
+
+draw_normal :: proc(g: ^Game_3D) {
+    c := cast_f32(drone_center(g))
+    normal := cast_f32(drone_normal(g))
+    front := cast_f32(drone_front(g))
+    rl.DrawSphere(c + normal, 0.125, rl.RED)
+    rl.DrawSphere(c, 0.125, rl.PURPLE)
+    rl.DrawSphere(front, 0.125, rl.YELLOW)
+}
+
+draw_3d :: proc() {
+    rl.BeginDrawing()
+    rl.ClearBackground(rl.RAYWHITE)
+    draw_gyro(g.g3d.gyro)
+    rl.BeginMode3D(g.g3d.camera)
+    draw_drone()
+    rl.DrawGrid(10, 2.0)
+    draw_normal(&g.g3d)
+    rl.EndMode3D()
+    rl.EndDrawing()
+}
+
+game_2d :: proc() {
+    update_2d()
+    draw_2d()
+    handle_input()
+}
+
+game_3d :: proc() {
+    update_3d()
+    draw_3d()
+}
+
 @(export)
 game_update :: proc() {
-    update()
-	draw()
-    handle_input()
+    // game_2d()
+    game_3d()
 
 	// Everything on tracking allocator is valid until end-of-frame.
 	free_all(context.temp_allocator)
@@ -220,35 +494,83 @@ game_init_window :: proc() {
 	rl.SetWindowPosition(200, 200)
 	rl.SetTargetFPS(60)
 	rl.SetExitKey(nil)
+    rl.HideCursor()
+    rl.DisableCursor()
+
 }
 
 @(export)
 game_init :: proc() {
 	g = new(Game_Memory)
 
-    apos := [2]f64{100, 100}
-    bpos := [2]f64{150, 120}
+    apos := [3]f64{100, 100, 0}
+    bpos := [3]f64{150, 120, 0}
 	g^ = Game_Memory {
 		run = true,
-        particles = {
-            {
-                radius = 10,
-                position = apos,
-                position_old = apos,
-                mass = 10,
+        g2d = {
+            particles = {
+                {
+                    radius = 10,
+                    position = apos,
+                    position_old = apos,
+                    mass = 10,
+                },
+                {
+                    radius = 10,
+                    position = bpos,
+                    position_old = bpos,
+                    mass = 10,
+                },
             },
-            {
-                radius = 10,
-                position = bpos,
-                position_old = bpos,
-                mass = 10,
-            },
+            edit = .None,
         },
         dt = 0.001,
-        edit = .None,
+
+        g3d = {
+            camera = {
+                position = {0.0, -4.0, 5.0},
+                target = {0.0, 0.0, 0.0},
+                up = {0.0, 0.0, 1.0},
+                fovy = 90.0,
+                projection = .PERSPECTIVE,
+            },
+            particles = {
+                {
+                    radius = 0.5,
+                    position = {1,1,2},
+                    position_old = 0,
+                    mass = 10,
+                },
+                {
+                    radius = 0.5,
+                    position = {-1,1,2},
+                    position_old = 0,
+                    mass = 10,
+                },
+                {
+                    radius = 0.5,
+                    position = {1,-1,2},
+                    position_old = 0,
+                    mass = 10,
+                },
+
+                {
+                    radius = 0.5,
+                    position = {-1,-1,2},
+                    position_old = 0,
+                    mass = 10,
+                },
+            },
+            drone = {
+                {p = 0, p1 = 1, length = 2},
+                {p = 0, p1 = 2, length = 2},
+                {p = 1, p1 = 3, length = 2},
+                {p = 3, p1 = 2, length = 2},
+            },
+        },
 	}
 
-    init_pid(&g.pid)
+    init_pid(&g.g2d.pid)
 
 	game_hot_reloaded(g)
 }
