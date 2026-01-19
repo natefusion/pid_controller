@@ -43,6 +43,7 @@ Edit_Mode :: enum {
 
 Particle :: struct {
     force : [3]f64,
+    prop_spin_dir : f64,
     position_old : [3]f64,
     position : [3]f64,
     angular_position: [3]f64,
@@ -57,7 +58,7 @@ Link :: struct {
     length: f64,
 }
 
-Super_Particle :: [4]Link
+Super_Particle :: [6]Link
 
 PID_Controller :: struct {
     Kp: f64,
@@ -82,6 +83,7 @@ Game_3D :: struct {
     camera: rl.Camera3D,
     gyro : [3]f64,
     pid : [3]PID_Controller,
+    edit: Edit_Mode,
 }
 
 Game_Memory :: struct {
@@ -92,6 +94,57 @@ Game_Memory :: struct {
 }
 
 g: ^Game_Memory
+
+set_game_3d_default :: proc(g: ^Game_3D) {
+    g.camera = {
+        position = {0.0, -4.0, 25.0},
+        target = {0.0, 0.0, 0.0},
+        up = {0.0, 0.0, 1.0},
+        fovy = 90.0,
+        projection = .PERSPECTIVE,
+    }
+
+    g.particles = {
+        { // front right
+            radius = 0.5,
+            prop_spin_dir = 1,
+            position = {1,1,20.5},
+            position_old = {1,1,20.5},
+            mass = 10,
+        },
+        { // front left
+            radius = 0.5,
+            prop_spin_dir = -1,
+            position = {-1,1,20.5},
+            position_old = {-1,1,20.5},
+            mass = 10,
+        },
+        { // back right
+            radius = 0.5,
+            prop_spin_dir = 1,
+            position = {1,-1,20},
+            position_old = {1,-1,20},
+            mass = 10,
+        },
+        { // back left
+            radius = 0.5,
+            prop_spin_dir = -1,
+            position = {-1,-1,20},
+            position_old = {-1,-1,20},
+            mass = 10,
+        },
+    }
+
+    g.drone = {
+        {p = 0, p1 = 1, length = 2},
+        {p = 0, p1 = 2, length = 2},
+        {p = 1, p1 = 3, length = 2},
+        {p = 3, p1 = 2, length = 2},
+        
+        {p = 0, p1 = 3, length = math.sqrt_f64(8.0)},
+        {p = 1, p1 = 2, length = math.sqrt_f64(8.0)},
+    }
+}
 
 // DrawTextCodepoint3D :: proc(font: rl.Font, codepoint: int, position: [3]f32, fontSize: f32, backface: bool, tint: rl.Color) {
 //     position := position
@@ -129,7 +182,7 @@ g: ^Game_Memory
 //         LETTER_BOUNDRY_SIZE :: 0.25
 //         TEXT_MAX_LAYERS :: 32
 //         LETTER_BOUNDRY_COLOR :: rl.VIOLET
-        
+
 //         if SHOW_LETTER_BOUNDARY do rl.DrawCubeWiresV(rl.Vector3{ position.x + width/2, position.y, position.z + height/2}, rl.Vector3{ width, LETTER_BOUNDRY_SIZE, height }, LETTER_BOUNDRY_COLOR)
 
 //         rl.CheckRenderBatchLimit(4 + 4*backface)
@@ -223,7 +276,7 @@ set_angular_position :: proc(ps: []Particle, sp: ^Super_Particle) {
     // r1 := p1.position-center
     // r2 := p2.position-center
     // r3 := p3.position-center
-        
+    
     // temp := p1.angular_position
     // p1.angular_position = math.mod(math.TAU + linalg.angle_between(r1, ref) * math.sign(linalg.cross(r1, ref)), math.TAU)
     // p1.angular_position_old = temp
@@ -242,7 +295,7 @@ update_link :: proc(ps: []Particle, link : Link) {
     p1_pos := &ps[link.p1].position
 
     diff := p_pos^ - p1_pos^
-    dist := linalg.length(diff)
+        dist := linalg.length(diff)
     diff_factor := (link.length - dist) / dist
     offset := diff * diff_factor * 0.5
 
@@ -259,13 +312,18 @@ draw_links :: proc(g: ^Game_3D) {
 init_pid :: proc(using pid: ^PID_Controller) {
     Kp = 10.0
     Ki = 10.0
-    Kd = 10.0
+    Kd = 20.0
     setpoint = 0.0
     A = {
         Kp + Ki*g.dt + Kd/g.dt,
         -Kp - 2*Kd/g.dt,
         Kd/g.dt,
     }
+    error = 0
+    output = 0
+}
+
+reset_pid :: proc(using pid: ^PID_Controller) {
     error = 0
     output = 0
 }
@@ -438,6 +496,45 @@ handle_input :: proc() {
     }
 }
 
+handle_input_3d :: proc(g: ^Game_3D) {
+    if rl.IsKeyDown(.P) {
+        g.edit = .Proportional
+    } else if rl.IsKeyDown(.I) {
+        g.edit = .Integral
+    } else if rl.IsKeyDown(.D) {
+        g.edit = .Derivative
+    } else if rl.IsKeyDown(.N) {
+        g.edit = .None
+    }
+
+    mw : f64 = 0
+    if rl.IsKeyDown(.LEFT_BRACKET) {
+        mw -= 0.1
+    }
+    if rl.IsKeyDown(.RIGHT_BRACKET) {
+        mw += 0.1
+    }
+
+    for &p in g.pid {
+        switch g.edit {
+        case .Proportional:
+            p.Kp += mw
+        case .Integral:
+            p.Ki += mw
+        case .Derivative:
+            p.Kd += mw
+        case .None:
+        }
+    }
+
+    if rl.IsKeyPressed(.R) {
+        for &p in g.pid do reset_pid(&p)
+        set_game_3d_default(g)
+    }
+
+    
+}
+
 update_gyro :: proc(g: ^Game_3D) {
     a := g.particles[0].position
     n := drone_normal(g)
@@ -450,13 +547,23 @@ update_gyro :: proc(g: ^Game_3D) {
 handle_pid3d :: proc(g: ^Game_3D) {
     update_pid(g.gyro[0], &g.pid[0])
     update_pid(g.gyro[1], &g.pid[1])
+    update_pid(g.gyro[2], &g.pid[2])
     
     pitch_force := g.pid[0].output
     roll_force := g.pid[1].output
     i, pitch_adj, roll_adj := lowest_particle_3d(g)
-    g.particles[i].force -= {0, 0, math.sqrt(math.pow(pitch_force, 2) + math.pow(roll_force, 2))}
-    g.particles[pitch_adj].force -= {0, 0, pitch_force}
-    g.particles[roll_adj].force -= {0, 0, roll_force}
+    g.particles[i].force -= {0, 0, g.particles[i].prop_spin_dir * math.sqrt(math.pow(pitch_force, 2) + math.pow(roll_force, 2))}
+    g.particles[pitch_adj].force -= {0, 0, g.particles[pitch_adj].prop_spin_dir * pitch_force}
+    g.particles[roll_adj].force -= {0, 0, g.particles[roll_adj].prop_spin_dir * roll_force}
+
+    yaw_force := g.pid[2].output
+    for &p in g.particles {
+        if p.prop_spin_dir > 0 {
+            p.force -= yaw_force
+        } else {
+            p.force += yaw_force
+        }
+    }
 }
 
 
@@ -520,7 +627,8 @@ draw_3d :: proc(g: ^Game_3D) {
     end_y : i32 = 100
     end_y = draw_pid_stats(&g.pid[0], end_y)
     end_y = draw_pid_stats(&g.pid[1], end_y)
-    draw_pid_stats(&g.pid[2], end_y)
+    end_y = draw_pid_stats(&g.pid[2], end_y)
+    rl.DrawText(fmt.caprintf("edit mode: %v", g.edit), 10, end_y, 20, rl.GREEN)
     rl.BeginMode3D(g.camera)
     draw_drone()
     rl.DrawGrid(10, 2.0)
@@ -539,6 +647,7 @@ game_2d :: proc() {
 game_3d :: proc() {
     update_3d()
     draw_3d(&g.g3d)
+    handle_input_3d(&g.g3d)
 }
 
 @(export)
@@ -588,56 +697,18 @@ game_init :: proc() {
             edit = .None,
         },
         dt = 0.001,
-
-        g3d = {
-            camera = {
-                position = {0.0, -4.0, 25.0},
-                target = {0.0, 0.0, 0.0},
-                up = {0.0, 0.0, 1.0},
-                fovy = 90.0,
-                projection = .PERSPECTIVE,
-            },
-            particles = {
-                { // front right
-                    radius = 0.5,
-                    position = {1,1,20.5},
-                    position_old = {1,1,20.5},
-                    mass = 10,
-                },
-                { // front left
-                    radius = 0.5,
-                    position = {-1,1,20.5},
-                    position_old = {-1,1,20.5},
-                    mass = 10,
-                },
-                { // back right
-                    radius = 0.5,
-                    position = {1,-1,20},
-                    position_old = {1,-1,20},
-                    mass = 10,
-                },
-                { // back left
-                    radius = 0.5,
-                    position = {-1,-1,20},
-                    position_old = {-1,-1,20},
-                    mass = 10,
-                },
-            },
-            drone = {
-                {p = 0, p1 = 1, length = 2},
-                {p = 0, p1 = 2, length = 2},
-                {p = 1, p1 = 3, length = 2},
-                {p = 3, p1 = 2, length = 2},
-            },
-        },
 	}
+
+    set_game_3d_default(&g.g3d)
 
     init_pid(&g.g2d.pid)
 
     for &p in g.g3d.pid {
         init_pid(&p)
     }
+    
 
+    g.g3d.pid[2].setpoint = 0.2
 
 	game_hot_reloaded(g)
 }
