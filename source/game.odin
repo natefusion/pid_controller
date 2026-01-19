@@ -41,6 +41,13 @@ Edit_Mode :: enum {
     Derivative,
 }
 
+Pid_Type :: enum {
+    Pitch,
+    Roll,
+    Yaw,
+    None,
+}
+
 Particle :: struct {
     force : [3]f64,
     prop_spin_dir : f64,
@@ -84,6 +91,7 @@ Game_3D :: struct {
     gyro : [3]f64,
     pid : [3]PID_Controller,
     edit: Edit_Mode,
+    selected_pid: Pid_Type,
 }
 
 Game_Memory :: struct {
@@ -115,8 +123,8 @@ set_game_3d_default :: proc(g: ^Game_3D) {
         { // front left
             radius = 0.5,
             prop_spin_dir = -1,
-            position = {-1,1,20.5},
-            position_old = {-1,1,20.5},
+            position = {-1,1,20},
+            position_old = {-1,1,20},
             mass = 10,
         },
         { // back right
@@ -355,6 +363,11 @@ draw_pid_stats :: proc(pid: ^PID_Controller, start_y: i32 = 10) -> (end_y: i32) 
     str = fmt.caprintf("Kp: %f, Ki: %f, Kd: %f", pid.Kp, pid.Ki, pid.Kd)
     rl.DrawText(str, 10, end_y, 20, rl.BLACK)
 
+    end_y += 20
+
+    str = fmt.caprintf("setpoint: %f", pid.setpoint)
+    rl.DrawText(str, 10, end_y, 20, rl.BLACK)
+
     end_y += 50
 
     return
@@ -515,7 +528,30 @@ handle_input_3d :: proc(g: ^Game_3D) {
         mw += 0.1
     }
 
-    for &p in g.pid {
+    if rl.IsKeyPressed(.ONE) {
+        g.selected_pid = .Pitch
+    } else if rl.IsKeyPressed(.TWO) {
+        g.selected_pid = .Roll
+    } else if rl.IsKeyPressed(.THREE) {
+        g.selected_pid = .Yaw
+    } else if rl.IsKeyPressed(.ZERO) {
+        g.selected_pid = .None
+    }
+
+    if g.selected_pid == .None {
+        for &p in g.pid {
+            switch g.edit {
+            case .Proportional:
+                p.Kp += mw
+            case .Integral:
+                p.Ki += mw
+            case .Derivative:
+                p.Kd += mw
+            case .None:
+            }
+        }
+    } else {
+        p := &g.pid[g.selected_pid]
         switch g.edit {
         case .Proportional:
             p.Kp += mw
@@ -526,6 +562,7 @@ handle_input_3d :: proc(g: ^Game_3D) {
         case .None:
         }
     }
+
 
     if rl.IsKeyPressed(.R) {
         for &p in g.pid do reset_pid(&p)
@@ -544,6 +581,11 @@ update_gyro :: proc(g: ^Game_3D) {
     g.gyro[2] = linalg.atan2(a.x, a.y) - math.PI / 4
 }
 
+hypot :: proc(a, b: f64) -> (c: f64) {
+    c = math.sqrt(math.pow(a, 2) + math.pow(b, 2))
+    return
+}
+
 handle_pid3d :: proc(g: ^Game_3D) {
     update_pid(g.gyro[0], &g.pid[0])
     update_pid(g.gyro[1], &g.pid[1])
@@ -552,18 +594,38 @@ handle_pid3d :: proc(g: ^Game_3D) {
     pitch_force := g.pid[0].output
     roll_force := g.pid[1].output
     i, pitch_adj, roll_adj := lowest_particle_3d(g)
-    g.particles[i].force -= {0, 0, g.particles[i].prop_spin_dir * math.sqrt(math.pow(pitch_force, 2) + math.pow(roll_force, 2))}
-    g.particles[pitch_adj].force -= {0, 0, g.particles[pitch_adj].prop_spin_dir * pitch_force}
-    g.particles[roll_adj].force -= {0, 0, g.particles[roll_adj].prop_spin_dir * roll_force}
+    // g.particles[i].force -= {0, 0, g.particles[i].prop_spin_dir * hypot(pitch_force, roll_force)}
+    // g.particles[pitch_adj].force -= {0, 0, g.particles[pitch_adj].prop_spin_dir * pitch_force}
+    // g.particles[roll_adj].force -= {0, 0, g.particles[roll_adj].prop_spin_dir * roll_force}
 
-    yaw_force := g.pid[2].output
-    for &p in g.particles {
-        if p.prop_spin_dir > 0 {
-            p.force -= yaw_force
-        } else {
-            p.force += yaw_force
-        }
-    }
+    // yaw_force := g.pid[2].output
+    // g.particles[0].force -= {0, 0, yaw_force}
+    // g.particles[1].force -= {0, 0, yaw_force}
+
+    // g.particles[2].force -= {0, 0, yaw_force}
+    // g.particles[3].force -= {0, 0, yaw_force}
+
+    // for &p, idx in g.particles {
+    //     full_pitch_force := g.particles[pitch_adj].prop_spin_dir * pitch_force
+        
+    //     full_roll_force := g.particles[roll_adj].prop_spin_dir * roll_force
+    //     full_roll_yaw_force := g.particles[i].prop_spin_dir * hypot(pitch_force, roll_force)
+
+    //     full_force : f64 = 0
+    //     if idx == i {
+    //         full_force = hypot(full_roll_yaw_force, yaw_force)
+    //     } else if idx == pitch_adj {
+    //         full_force = hypot(full_pitch_force, yaw_force)
+    //     } else if idx == roll_adj {
+    //         full_force = hypot(full_roll_force, yaw_force)
+    //     }
+        
+    //     if p.prop_spin_dir > 0 {
+    //         p.force -= {0, 0, full_force}
+    //     } else {
+    //         p.force += {0, 0, full_force}
+    //     }
+    // }
 }
 
 
@@ -629,6 +691,8 @@ draw_3d :: proc(g: ^Game_3D) {
     end_y = draw_pid_stats(&g.pid[1], end_y)
     end_y = draw_pid_stats(&g.pid[2], end_y)
     rl.DrawText(fmt.caprintf("edit mode: %v", g.edit), 10, end_y, 20, rl.GREEN)
+    
+    rl.DrawText(fmt.caprintf("selected pid: %v", g.selected_pid), 10, end_y+20, 20, rl.GREEN)
     rl.BeginMode3D(g.camera)
     draw_drone()
     rl.DrawGrid(10, 2.0)

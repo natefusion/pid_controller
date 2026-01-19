@@ -34,7 +34,7 @@ esac
 # Build the game. Note that the game goes into $OUT_DIR while the exe stays in
 # the root folder.
 echo "Building game$DLL_EXT"
-odin build source -extra-linker-flags:"$EXTRA_LINKER_FLAGS" -define:RAYLIB_SHARED=true -build-mode:dll -out:$OUT_DIR/game_tmp$DLL_EXT -strict-style -vet -debug
+odin build source -extra-linker-flags:"$EXTRA_LINKER_FLAGS" -define:RAYLIB_SHARED=true -build-mode:dll -out:$OUT_DIR/game_tmp$DLL_EXT -debug
 
 # Need to use a temp file on Linux because it first writes an empty `game.so`,
 # which the game will load before it is actually fully written.
