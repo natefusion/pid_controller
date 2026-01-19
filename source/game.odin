@@ -250,10 +250,16 @@ update_link :: proc(ps: []Particle, link : Link) {
     p1_pos^ -= offset
 }
 
+draw_links :: proc(g: ^Game_3D) {
+    for l in g.drone {
+        rl.DrawLine3D(cast_f32(g.particles[l.p].position), cast_f32(g.particles[l.p1].position), rl.MAGENTA) 
+    }
+}
+
 init_pid :: proc(using pid: ^PID_Controller) {
-    Kp = 1000.0
-    Ki = 1000.0
-    Kd = 1000.0
+    Kp = 10.0
+    Ki = 10.0
+    Kd = 10.0
     setpoint = 0.0
     A = {
         Kp + Ki*g.dt + Kd/g.dt,
@@ -275,15 +281,25 @@ update_pid :: proc(measured_value: f64, pid: ^PID_Controller) {
     pid.output += pid.A[0] * pid.error[0] + pid.A[1] * pid.error[1] + pid.A[2] * pid.error[2]
 }
 
-draw_pid_stats :: proc(pid: ^PID_Controller) {
+draw_pid_stats :: proc(pid: ^PID_Controller, start_y: i32 = 10) -> (end_y: i32) {
+    end_y = start_y
+    
     str := fmt.caprintf("PID OUT: %f", pid.output)
-    rl.DrawText(str, 200, 10, 20, rl.RED)
+    rl.DrawText(str, 10, end_y, 20, rl.RED)
+
+    end_y += 20
 
     str = fmt.caprintf("PID ERR: %f", pid.error)
-    rl.DrawText(str, 200, 30, 20, rl.BLACK)
+    rl.DrawText(str, 10, end_y, 20, rl.BLACK)
+
+    end_y += 20
 
     str = fmt.caprintf("Kp: %f, Ki: %f, Kd: %f", pid.Kp, pid.Ki, pid.Kd)
-    rl.DrawText(str, 200, 50, 20, rl.BLACK)
+    rl.DrawText(str, 10, end_y, 20, rl.BLACK)
+
+    end_y += 50
+
+    return
 }
 
 update_particle :: proc(p: ^Particle) {
@@ -296,7 +312,7 @@ update_particle :: proc(p: ^Particle) {
 }
 
 gravity :: proc(p: ^Particle) {
-    p.force += {0, 1000, 0}
+    p.force += {0, 0, -10}
 }
 
 handle_ground_collision :: proc(p: ^Particle) {
@@ -306,17 +322,28 @@ handle_ground_collision :: proc(p: ^Particle) {
     }
 }
 
+handle_ground_collision_3d :: proc(p: ^Particle) {
+    if (p.position.z <= 0.1) {
+        p.position.z = 0.1
+        p.position_old.z = 0.1
+    }
+}
+
 update_level :: proc() {
     a := g.g2d.particles[0].position
     b := g.g2d.particles[1].position
     g.g2d.level = linalg.atan2(abs(a.y - b.y), abs(a.x - b.x))
 }
 
-update_particles :: proc(particles: []Particle) {
+update_particles :: proc(particles: []Particle, two_d: bool = false) {
     for &p in particles {
         gravity(&p)
         update_particle(&p)
-        handle_ground_collision(&p)
+        if two_d {
+            handle_ground_collision(&p)
+        } else {
+            handle_ground_collision_3d(&p)
+        }
     }
 }
 
@@ -333,6 +360,35 @@ lowest_particle :: proc() -> (lowest: int) {
     return
 }
 
+lowest_particle_3d :: proc(g: ^Game_3D) -> (lowest, pitch_adj, roll_adj: int) {
+    min_val := g.particles[0].position.z
+
+    for p, i in g.particles {
+        if p.position.z > min_val {
+            min_val = p.position.z
+            lowest = i
+        }
+    }
+
+    // make sure this matches the super particle
+    switch (lowest) {
+    case 0:
+        pitch_adj = 1
+        roll_adj = 2
+    case 1:
+        pitch_adj = 0
+        roll_adj = 3
+    case 2:
+        pitch_adj = 3
+        roll_adj = 0
+    case 3:
+        pitch_adj = 2
+        roll_adj = 1
+    }
+
+    return
+}
+
 handle_pid :: proc() {
     update_pid(g.g2d.level, &g.g2d.pid)
     force := g.g2d.pid.output
@@ -343,7 +399,7 @@ handle_pid :: proc() {
 update_2d :: proc() {
     update_level()
     handle_pid()
-    update_particles(g.g2d.particles[:])
+    update_particles(g.g2d.particles[:], two_d=true)
 }
 
 draw_2d :: proc() {
@@ -392,13 +448,15 @@ update_gyro :: proc(g: ^Game_3D) {
 }
 
 handle_pid3d :: proc(g: ^Game_3D) {
-    // update_pid(g.gyro[0], &g.pid[0])
-    // update_pid(g.gyro[1], &g.pid[1])
+    update_pid(g.gyro[0], &g.pid[0])
+    update_pid(g.gyro[1], &g.pid[1])
     
-    // pitch_force := g.pid[0].output
-    // roll_force := g.pid[1].output
-    // i := lowest_particle()
-    // g.g2d.particles[i].force += {0, force}
+    pitch_force := g.pid[0].output
+    roll_force := g.pid[1].output
+    i, pitch_adj, roll_adj := lowest_particle_3d(g)
+    g.particles[i].force -= {0, 0, math.sqrt(math.pow(pitch_force, 2) + math.pow(roll_force, 2))}
+    g.particles[pitch_adj].force -= {0, 0, pitch_force}
+    g.particles[roll_adj].force -= {0, 0, roll_force}
 }
 
 
@@ -406,8 +464,8 @@ update_3d :: proc() {
     rl.UpdateCamera(&g.g3d.camera, .FREE)
     update_gyro(&g.g3d)
     handle_pid3d(&g.g3d)
-    // update_particles(g.g3d.particles[:])
-    // for link in g.g3d.drone do update_link(g.g3d.particles[:], link)
+    update_particles(g.g3d.particles[:])
+    for link in g.g3d.drone do update_link(g.g3d.particles[:], link)
     // set_angular_position(g.g3d.particles[:], &g.g3d.drone)
 }
 
@@ -455,14 +513,19 @@ draw_normal :: proc(g: ^Game_3D) {
     rl.DrawSphere(front, 0.125, rl.YELLOW)
 }
 
-draw_3d :: proc() {
+draw_3d :: proc(g: ^Game_3D) {
     rl.BeginDrawing()
     rl.ClearBackground(rl.RAYWHITE)
-    draw_gyro(g.g3d.gyro)
-    rl.BeginMode3D(g.g3d.camera)
+    draw_gyro(g.gyro)
+    end_y : i32 = 100
+    end_y = draw_pid_stats(&g.pid[0], end_y)
+    end_y = draw_pid_stats(&g.pid[0], end_y)
+    draw_pid_stats(&g.pid[2], end_y)
+    rl.BeginMode3D(g.camera)
     draw_drone()
     rl.DrawGrid(10, 2.0)
-    draw_normal(&g.g3d)
+    draw_normal(g)
+    draw_links(g)
     rl.EndMode3D()
     rl.EndDrawing()
 }
@@ -475,7 +538,7 @@ game_2d :: proc() {
 
 game_3d :: proc() {
     update_3d()
-    draw_3d()
+    draw_3d(&g.g3d)
 }
 
 @(export)
@@ -528,36 +591,35 @@ game_init :: proc() {
 
         g3d = {
             camera = {
-                position = {0.0, -4.0, 5.0},
+                position = {0.0, -4.0, 25.0},
                 target = {0.0, 0.0, 0.0},
                 up = {0.0, 0.0, 1.0},
                 fovy = 90.0,
                 projection = .PERSPECTIVE,
             },
             particles = {
-                {
+                { // front right
                     radius = 0.5,
-                    position = {1,1,2},
-                    position_old = 0,
+                    position = {1,1,20.5},
+                    position_old = {1,1,20.5},
                     mass = 10,
                 },
-                {
+                { // front left
                     radius = 0.5,
-                    position = {-1,1,2},
-                    position_old = 0,
+                    position = {-1,1,20.5},
+                    position_old = {-1,1,20.5},
                     mass = 10,
                 },
-                {
+                { // back right
                     radius = 0.5,
-                    position = {1,-1,2},
-                    position_old = 0,
+                    position = {1,-1,20},
+                    position_old = {1,-1,20},
                     mass = 10,
                 },
-
-                {
+                { // back left
                     radius = 0.5,
-                    position = {-1,-1,2},
-                    position_old = 0,
+                    position = {-1,-1,20},
+                    position_old = {-1,-1,20},
                     mass = 10,
                 },
             },
@@ -571,6 +633,11 @@ game_init :: proc() {
 	}
 
     init_pid(&g.g2d.pid)
+
+    for &p in g.g3d.pid {
+        init_pid(&p)
+    }
+
 
 	game_hot_reloaded(g)
 }
