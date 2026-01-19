@@ -519,7 +519,7 @@ draw_3d :: proc(g: ^Game_3D) {
     draw_gyro(g.gyro)
     end_y : i32 = 100
     end_y = draw_pid_stats(&g.pid[0], end_y)
-    end_y = draw_pid_stats(&g.pid[0], end_y)
+    end_y = draw_pid_stats(&g.pid[1], end_y)
     draw_pid_stats(&g.pid[2], end_y)
     rl.BeginMode3D(g.camera)
     draw_drone()
