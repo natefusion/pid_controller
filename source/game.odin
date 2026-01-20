@@ -50,6 +50,7 @@ Pid_Type :: enum {
 
 Particle :: struct {
     force : [3]f64,
+    prop_force : [3]f64,
     prop_spin_dir : f64,
     position_old : [3]f64,
     position : [3]f64,
@@ -116,27 +117,27 @@ set_game_3d_default :: proc(g: ^Game_3D) {
         { // front right
             radius = 0.5,
             prop_spin_dir = 1,
-            position = {1,1,20.5},
-            position_old = {1,1,20.5},
+            position = {1,1,21},
+            position_old = {1,1,21},
             mass = 10,
         },
         { // front left
             radius = 0.5,
             prop_spin_dir = -1,
-            position = {-1,1,20},
-            position_old = {-1,1,20},
+            position = {-1,1,21},
+            position_old = {-1,1,21},
             mass = 10,
         },
         { // back right
             radius = 0.5,
-            prop_spin_dir = 1,
+            prop_spin_dir = -1,
             position = {1,-1,20},
             position_old = {1,-1,20},
             mass = 10,
         },
         { // back left
             radius = 0.5,
-            prop_spin_dir = -1,
+            prop_spin_dir = 1,
             position = {-1,-1,20},
             position_old = {-1,-1,20},
             mass = 10,
@@ -380,6 +381,7 @@ update_particle :: proc(p: ^Particle) {
     p.position = 2*p.position - p.position_old + x
     p.position_old = temp
     p.force = 0
+    
 }
 
 gravity :: proc(p: ^Particle) {
@@ -572,6 +574,13 @@ handle_input_3d :: proc(g: ^Game_3D) {
     
 }
 
+draw_force_vectors :: proc(g: ^Game_3D) {
+    for p in g.particles {
+        end_pos := p.position + p.prop_force
+        rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
+    }
+}
+
 update_gyro :: proc(g: ^Game_3D) {
     a := g.particles[0].position
     n := drone_normal(g)
@@ -594,9 +603,14 @@ handle_pid3d :: proc(g: ^Game_3D) {
     pitch_force := g.pid[0].output
     roll_force := g.pid[1].output
     i, pitch_adj, roll_adj := lowest_particle_3d(g)
-    // g.particles[i].force -= {0, 0, g.particles[i].prop_spin_dir * hypot(pitch_force, roll_force)}
-    // g.particles[pitch_adj].force -= {0, 0, g.particles[pitch_adj].prop_spin_dir * pitch_force}
-    // g.particles[roll_adj].force -= {0, 0, g.particles[roll_adj].prop_spin_dir * roll_force}
+    
+    g.particles[i].prop_force = drone_normal(g) * g.particles[i].prop_spin_dir * hypot(pitch_force, roll_force)
+    g.particles[pitch_adj].prop_force = drone_normal(g) * g.particles[pitch_adj].prop_spin_dir * pitch_force
+    g.particles[roll_adj].prop_force = drone_normal(g) * g.particles[roll_adj].prop_spin_dir * roll_force
+    
+    g.particles[i].force -= g.particles[i].prop_force
+    g.particles[pitch_adj].force -= g.particles[pitch_adj].prop_force
+    g.particles[roll_adj].force -= g.particles[roll_adj].prop_force
 
     // yaw_force := g.pid[2].output
     // g.particles[0].force -= {0, 0, yaw_force}
@@ -691,13 +705,13 @@ draw_3d :: proc(g: ^Game_3D) {
     end_y = draw_pid_stats(&g.pid[1], end_y)
     end_y = draw_pid_stats(&g.pid[2], end_y)
     rl.DrawText(fmt.caprintf("edit mode: %v", g.edit), 10, end_y, 20, rl.GREEN)
-    
     rl.DrawText(fmt.caprintf("selected pid: %v", g.selected_pid), 10, end_y+20, 20, rl.GREEN)
     rl.BeginMode3D(g.camera)
     draw_drone()
     rl.DrawGrid(10, 2.0)
     draw_normal(g)
     draw_links(g)
+    draw_force_vectors(g)
     rl.EndMode3D()
     rl.EndDrawing()
 }
@@ -772,7 +786,7 @@ game_init :: proc() {
     }
     
 
-    g.g3d.pid[2].setpoint = 0.2
+    // g.g3d.pid[2].setpoint = 0.2
 
 	game_hot_reloaded(g)
 }
