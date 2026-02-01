@@ -341,11 +341,10 @@ update_pid :: proc(measured_value: f64, pid: ^PID_Controller) {
     pid.A[0] = pid.Kp + pid.Ki*g.dt + pid.Kd/g.dt
     pid.A[1] = -pid.Kp - 2*pid.Kd/g.dt
     pid.A[2] = pid.Kd / g.dt
-    
     pid.error[2] = pid.error[1]
     pid.error[1] = pid.error[0]
     pid.error[0] = pid.setpoint - measured_value
-    pid.output += pid.A[0] * pid.error[0] + pid.A[1] * pid.error[1] + pid.A[2] * pid.error[2]
+    pid.output += linalg.dot(pid.A, pid.error)
 }
 
 draw_pid_stats :: proc(pid: ^PID_Controller, start_y: i32 = 10) -> (end_y: i32) {
@@ -433,11 +432,11 @@ lowest_particle :: proc() -> (lowest: int) {
     return
 }
 
-lowest_particle_3d :: proc(g: ^Game_3D) -> (lowest, pitch_adj, roll_adj: int) {
+lowest_particle_3d :: proc(g: ^Game_3D) -> (lowest, pitch_adj, roll_adj, opp: int) {
     min_val := g.particles[0].position.z
 
     for p, i in g.particles {
-        if p.position.z > min_val {
+        if p.position.z < min_val {
             min_val = p.position.z
             lowest = i
         }
@@ -448,15 +447,19 @@ lowest_particle_3d :: proc(g: ^Game_3D) -> (lowest, pitch_adj, roll_adj: int) {
     case 0:
         pitch_adj = 1
         roll_adj = 2
+        opp = 3
     case 1:
         pitch_adj = 0
         roll_adj = 3
+        opp = 2
     case 2:
         pitch_adj = 3
         roll_adj = 0
+        opp = 1
     case 3:
         pitch_adj = 2
         roll_adj = 1
+        opp = 0
     }
 
     return
@@ -576,7 +579,7 @@ handle_input_3d :: proc(g: ^Game_3D) {
 
 draw_force_vectors :: proc(g: ^Game_3D) {
     for p in g.particles {
-        end_pos := p.position + p.prop_force
+        end_pos := p.position - p.prop_force
         rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
     }
 }
@@ -602,28 +605,64 @@ handle_pid3d :: proc(g: ^Game_3D) {
     
     pitch_force := g.pid[0].output
     roll_force := g.pid[1].output
-    i, pitch_adj, roll_adj := lowest_particle_3d(g)
-    
-    g.particles[i].prop_force = drone_normal(g) * g.particles[i].prop_spin_dir * hypot(pitch_force, roll_force)
-    g.particles[pitch_adj].prop_force = drone_normal(g) * g.particles[pitch_adj].prop_spin_dir * pitch_force
-    g.particles[roll_adj].prop_force = drone_normal(g) * g.particles[roll_adj].prop_spin_dir * roll_force
-    
-    g.particles[i].force -= g.particles[i].prop_force
-    g.particles[pitch_adj].force -= g.particles[pitch_adj].prop_force
-    g.particles[roll_adj].force -= g.particles[roll_adj].prop_force
+    i, pitch_adj, roll_adj, opp := lowest_particle_3d(g)
+
+    ps := &g.particles
+
+    for &p in ps do p.prop_force = 0
+
+    {
+        ps[i].prop_force += drone_normal(g) * ps[i].prop_spin_dir * hypot(pitch_force, roll_force)
+
+        // if ps[i].prop_spin_dir * pitch_force > 0 {
+        //     ps[roll_adj].prop_force += drone_normal(g) * ps[roll_adj].prop_spin_dir * abs(pitch_force)
+        // } else {
+        //     ps[pitch_adj].prop_force += drone_normal(g) * ps[pitch_adj].prop_spin_dir * abs(pitch_force)
+        // }
+
+        // if ps[roll_adj].prop_spin_dir * roll_force > 0 {
+        //     ps[pitch_adj].prop_force += drone_normal(g) * ps[pitch_adj].prop_spin_dir * abs(roll_force)
+        // } else {
+        //     ps[roll_adj].prop_force += drone_normal(g) * ps[roll_adj].prop_spin_dir * abs(roll_force)
+        // }
+
+            ps[i].force += ps[i].prop_force
+            ps[pitch_adj].force += ps[pitch_adj].prop_force
+            ps[roll_adj].force += ps[roll_adj].prop_force
+    }
+
+    // {
+    //     ps[i].prop_force += drone_normal(g) * ps[i].prop_spin_dir * hypot(pitch_force, roll_force)
+
+    //     if ps[pitch_adj].prop_spin_dir * pitch_force > 0 {
+    //         ps[roll_adj].prop_force += drone_normal(g) * ps[roll_adj].prop_spin_dir * abs(pitch_force)
+    //     } else {
+    //         ps[pitch_adj].prop_force += drone_normal(g) * ps[pitch_adj].prop_spin_dir * abs(pitch_force)
+    //     }
+
+    //     if ps[roll_adj].prop_spin_dir * roll_force > 0 {
+    //         ps[pitch_adj].prop_force += drone_normal(g) * ps[pitch_adj].prop_spin_dir * abs(roll_force)
+    //     } else {
+    //         ps[roll_adj].prop_force += drone_normal(g) * ps[roll_adj].prop_spin_dir * abs(roll_force)
+    //     }
+        
+    //     ps[i].force += ps[i].prop_force
+    //     ps[pitch_adj].force += ps[pitch_adj].prop_force
+    //     ps[roll_adj].force += ps[roll_adj].prop_force
+    // }
 
     // yaw_force := g.pid[2].output
-    // g.particles[0].force -= {0, 0, yaw_force}
-    // g.particles[1].force -= {0, 0, yaw_force}
+    // ps[0].force -= {0, 0, yaw_force}
+    // ps[1].force -= {0, 0, yaw_force}
 
-    // g.particles[2].force -= {0, 0, yaw_force}
-    // g.particles[3].force -= {0, 0, yaw_force}
+    // ps[2].force -= {0, 0, yaw_force}
+    // ps[3].force -= {0, 0, yaw_force}
 
-    // for &p, idx in g.particles {
-    //     full_pitch_force := g.particles[pitch_adj].prop_spin_dir * pitch_force
+    // for &p, idx in ps {
+    //     full_pitch_force := ps[pitch_adj].prop_spin_dir * pitch_force
         
-    //     full_roll_force := g.particles[roll_adj].prop_spin_dir * roll_force
-    //     full_roll_yaw_force := g.particles[i].prop_spin_dir * hypot(pitch_force, roll_force)
+    //     full_roll_force := ps[roll_adj].prop_spin_dir * roll_force
+    //     full_roll_yaw_force := ps[i].prop_spin_dir * hypot(pitch_force, roll_force)
 
     //     full_force : f64 = 0
     //     if idx == i {
@@ -652,9 +691,14 @@ update_3d :: proc() {
     // set_angular_position(g.g3d.particles[:], &g.g3d.drone)
 }
 
-draw_drone :: proc() {
-    for p in g.g3d.particles {
-        rl.DrawSphere({cast(f32)p.position.x, cast(f32)p.position.y, cast(f32)p.position.z}, cast(f32)p.radius, rl.GREEN)
+draw_drone :: proc(g: ^Game_3D) {
+    lowest, _, _, _ := lowest_particle_3d(g)
+    for p, i in g.particles {
+        if p.prop_spin_dir > 0 {
+            rl.DrawSphere({cast(f32)p.position.x, cast(f32)p.position.y, cast(f32)p.position.z}, cast(f32)p.radius, i == lowest ? rl.RED : rl.GREEN)
+        } else {
+            rl.DrawCube({cast(f32)p.position.x, cast(f32)p.position.y, cast(f32)p.position.z}, cast(f32)p.radius*2, cast(f32)p.radius*2, cast(f32)p.radius*2, i == lowest ? rl.RED : rl.GREEN)
+        }
     }
 }
 
@@ -707,7 +751,7 @@ draw_3d :: proc(g: ^Game_3D) {
     rl.DrawText(fmt.caprintf("edit mode: %v", g.edit), 10, end_y, 20, rl.GREEN)
     rl.DrawText(fmt.caprintf("selected pid: %v", g.selected_pid), 10, end_y+20, 20, rl.GREEN)
     rl.BeginMode3D(g.camera)
-    draw_drone()
+    draw_drone(g)
     rl.DrawGrid(10, 2.0)
     draw_normal(g)
     draw_links(g)
