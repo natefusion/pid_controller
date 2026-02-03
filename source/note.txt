@@ -1,0 +1,32 @@
+I NEED TO SIMULATE TORQUE NOW!!!!
+
+T_motor : Torque = K_T * w^2
+where K_T is some number of my choosing (possibly related to the actual prop specs)
+and w is the angular velocity
+
+F_motor_thrust : Force = C_T * rho * n^2 * D^4
+where C_T is some number
+and rho is the density of air (1.225 kg/m^3)
+and n is the speed in rev/sec
+and D is the diameter of the prop
+
+T_yaw : Torque = (T_1 + T_3) - (T_2 + T_4)
+basically, T_1 and T_3 spin the same direction, T_2 and T_4 spin opposite to the latter
+this T_yaw should be minimized with the PID
+
+I_z : Momement of Inertia = sum for each motor => (motor_mass * distance_from_center^2)
+the moment of inertia
+
+a : angular acceleration = T_yaw / I_z
+
+F : Force = T_yaw / distance_from_center
+this is the total tangential force
+
+
+in summary start with angular velocity
+the pid controller will control this
+
+use the angular velocity to calculate the thrust of the props (for the particle sim)
+and the torque of the props
+use the torque to find the tangential force (for the particle sim)
+use the total torque with the yaw PID

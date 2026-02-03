@@ -50,6 +50,8 @@ Pid_Type :: enum {
 
 Particle :: struct {
     force : [3]f64,
+    torque : [3]f64,
+    prop_torque : [3]f64,
     prop_force : [3]f64,
     prop_spin_dir : f64,
     position_old : [3]f64,
@@ -117,15 +119,15 @@ set_game_3d_default :: proc(g: ^Game_3D) {
         { // front right
             radius = 0.5,
             prop_spin_dir = 1,
-            position = {1,1,21},
-            position_old = {1,1,21},
+            position = {1,1,20},
+            position_old = {1,1,20},
             mass = 10,
         },
         { // front left
             radius = 0.5,
             prop_spin_dir = -1,
-            position = {-1,1,21},
-            position_old = {-1,1,21},
+            position = {-1,1,20},
+            position_old = {-1,1,20},
             mass = 10,
         },
         { // back right
@@ -319,9 +321,9 @@ draw_links :: proc(g: ^Game_3D) {
 }
 
 init_pid :: proc(using pid: ^PID_Controller) {
-    Kp = 10.0
-    Ki = 10.0
-    Kd = 20.0
+    Kp = 50.0
+    Ki = 50.0
+    Kd = 50.0
     setpoint = 0.0
     A = {
         Kp + Ki*g.dt + Kd/g.dt,
@@ -581,6 +583,9 @@ draw_force_vectors :: proc(g: ^Game_3D) {
     for p in g.particles {
         end_pos := p.position - p.prop_force
         rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
+
+        end_pos = p.position - p.prop_torque
+        rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
     }
 }
 
@@ -590,7 +595,15 @@ update_gyro :: proc(g: ^Game_3D) {
     c := drone_center(g)
     g.gyro[0] = linalg.angle_between(n.yz, c.yz)
     g.gyro[1] = linalg.angle_between(n.xz, c.xz)
-    g.gyro[2] = linalg.atan2(a.x, a.y) - math.PI / 4
+    g.gyro[2] = linalg.atan2(a.x, a.y) - math.PI / 4 - 0.1
+
+    // expanded rotation matrix
+    // rotate pitch and roll by 45 deg
+    new_pitch := g.gyro[0] * math.cos_f64(math.PI / 4.0) - g.gyro[1] * math.sin_f64(math.PI / 4.0)
+    new_roll :=  g.gyro[0] * math.sin_f64(math.PI / 4.0) + g.gyro[1] * math.cos_f64(math.PI / 4.0)
+
+    g.gyro[0] = new_pitch
+    g.gyro[1] = new_roll
 }
 
 hypot :: proc(a, b: f64) -> (c: f64) {
@@ -605,80 +618,41 @@ handle_pid3d :: proc(g: ^Game_3D) {
     
     pitch_force := g.pid[0].output
     roll_force := g.pid[1].output
-    i, pitch_adj, roll_adj, opp := lowest_particle_3d(g)
+    yaw_force := g.pid[2].output
 
     ps := &g.particles
-
     for &p in ps do p.prop_force = 0
 
-    {
-        ps[i].prop_force += drone_normal(g) * ps[i].prop_spin_dir * hypot(pitch_force, roll_force)
+    // if roll_force > 0 {
+    //     ps[0].prop_force += drone_normal(g) * ps[0].prop_spin_dir * abs(roll_force)
+    // } else if roll_force < 0 {
+    //     ps[3].prop_force += drone_normal(g) * ps[3].prop_spin_dir * abs(roll_force)
+    // }
+    
+    // if pitch_force > 0 {
+    //     ps[2].prop_force += drone_normal(g) * ps[2].prop_spin_dir * abs(pitch_force)
+    // } else if pitch_force < 0 {
+    //     ps[1].prop_force += drone_normal(g) * ps[1].prop_spin_dir * abs(pitch_force)
+    // }
 
-        // if ps[i].prop_spin_dir * pitch_force > 0 {
-        //     ps[roll_adj].prop_force += drone_normal(g) * ps[roll_adj].prop_spin_dir * abs(pitch_force)
-        // } else {
-        //     ps[pitch_adj].prop_force += drone_normal(g) * ps[pitch_adj].prop_spin_dir * abs(pitch_force)
-        // }
-
-        // if ps[roll_adj].prop_spin_dir * roll_force > 0 {
-        //     ps[pitch_adj].prop_force += drone_normal(g) * ps[pitch_adj].prop_spin_dir * abs(roll_force)
-        // } else {
-        //     ps[roll_adj].prop_force += drone_normal(g) * ps[roll_adj].prop_spin_dir * abs(roll_force)
-        // }
-
-            ps[i].force += ps[i].prop_force
-            ps[pitch_adj].force += ps[pitch_adj].prop_force
-            ps[roll_adj].force += ps[roll_adj].prop_force
+    if yaw_force > 0 {
+        ps[0].prop_force += drone_normal(g) * ps[0].prop_spin_dir * abs(yaw_force)
+        ps[3].prop_force += drone_normal(g) * ps[3].prop_spin_dir * abs(yaw_force)
+        
+        // ps[1].prop_force -= drone_normal(g) * ps[1].prop_spin_dir * abs(yaw_force)
+        // ps[2].prop_force -= drone_normal(g) * ps[2].prop_spin_dir * abs(yaw_force)
+    } else {
+        // ps[0].prop_force += drone_normal(g) * ps[0].prop_spin_dir * abs(yaw_force)
+        // ps[3].prop_force += drone_normal(g) * ps[3].prop_spin_dir * abs(yaw_force)
+        
+        ps[1].prop_force += drone_normal(g) * ps[1].prop_spin_dir * abs(yaw_force)
+        ps[2].prop_force += drone_normal(g) * ps[2].prop_spin_dir * abs(yaw_force)
     }
 
-    // {
-    //     ps[i].prop_force += drone_normal(g) * ps[i].prop_spin_dir * hypot(pitch_force, roll_force)
-
-    //     if ps[pitch_adj].prop_spin_dir * pitch_force > 0 {
-    //         ps[roll_adj].prop_force += drone_normal(g) * ps[roll_adj].prop_spin_dir * abs(pitch_force)
-    //     } else {
-    //         ps[pitch_adj].prop_force += drone_normal(g) * ps[pitch_adj].prop_spin_dir * abs(pitch_force)
-    //     }
-
-    //     if ps[roll_adj].prop_spin_dir * roll_force > 0 {
-    //         ps[pitch_adj].prop_force += drone_normal(g) * ps[pitch_adj].prop_spin_dir * abs(roll_force)
-    //     } else {
-    //         ps[roll_adj].prop_force += drone_normal(g) * ps[roll_adj].prop_spin_dir * abs(roll_force)
-    //     }
-        
-    //     ps[i].force += ps[i].prop_force
-    //     ps[pitch_adj].force += ps[pitch_adj].prop_force
-    //     ps[roll_adj].force += ps[roll_adj].prop_force
-    // }
-
-    // yaw_force := g.pid[2].output
-    // ps[0].force -= {0, 0, yaw_force}
-    // ps[1].force -= {0, 0, yaw_force}
-
-    // ps[2].force -= {0, 0, yaw_force}
-    // ps[3].force -= {0, 0, yaw_force}
-
-    // for &p, idx in ps {
-    //     full_pitch_force := ps[pitch_adj].prop_spin_dir * pitch_force
-        
-    //     full_roll_force := ps[roll_adj].prop_spin_dir * roll_force
-    //     full_roll_yaw_force := ps[i].prop_spin_dir * hypot(pitch_force, roll_force)
-
-    //     full_force : f64 = 0
-    //     if idx == i {
-    //         full_force = hypot(full_roll_yaw_force, yaw_force)
-    //     } else if idx == pitch_adj {
-    //         full_force = hypot(full_pitch_force, yaw_force)
-    //     } else if idx == roll_adj {
-    //         full_force = hypot(full_roll_force, yaw_force)
-    //     }
-        
-    //     if p.prop_spin_dir > 0 {
-    //         p.force -= {0, 0, full_force}
-    //     } else {
-    //         p.force += {0, 0, full_force}
-    //     }
-    // }
+    ps[0].force += ps[0].prop_force
+    ps[1].force += ps[1].prop_force
+    ps[2].force += ps[2].prop_force
+    ps[3].force += ps[3].prop_force
 }
 
 
