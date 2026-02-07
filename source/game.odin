@@ -80,13 +80,6 @@ PID_Controller :: struct {
     output: f64,
 }
 
-Game_2D :: struct {
-    particles: [2]Particle,
-    level: f64,
-    pid: PID_Controller,
-    edit: Edit_Mode,
-}
-
 Game_3D :: struct {
     drone: Super_Particle,
     particles : [4]Particle,
@@ -99,7 +92,6 @@ Game_3D :: struct {
 
 Game_Memory :: struct {
 	run: bool,
-    g2d : Game_2D,
     g3d : Game_3D,
     dt: f64,
 }
@@ -259,35 +251,12 @@ handle_ground_collision_3d :: proc(p: ^Particle) {
     }
 }
 
-update_level :: proc() {
-    a := g.g2d.particles[0].position
-    b := g.g2d.particles[1].position
-    g.g2d.level = linalg.atan2(abs(a.y - b.y), abs(a.x - b.x))
-}
-
-update_particles :: proc(particles: []Particle, two_d: bool = false) {
+update_particles :: proc(particles: []Particle) {
     for &p in particles {
         gravity(&p)
         update_particle(&p)
-        if two_d {
-            handle_ground_collision(&p)
-        } else {
-            handle_ground_collision_3d(&p)
-        }
+        handle_ground_collision_3d(&p)
     }
-}
-
-lowest_particle :: proc() -> (lowest: int) {
-    min_val := g.g2d.particles[0].position.y
-    
-    for p, i in g.g2d.particles {
-        // yeah yeah backwards suck my fat one
-        if p.position.y > min_val {
-            min_val = p.position.y
-            lowest = i
-        }
-    }
-    return
 }
 
 lowest_particle_3d :: proc(g: ^Game_3D) -> (lowest, pitch_adj, roll_adj, opp: int) {
@@ -321,55 +290,6 @@ lowest_particle_3d :: proc(g: ^Game_3D) -> (lowest, pitch_adj, roll_adj, opp: in
     }
 
     return
-}
-
-handle_pid :: proc() {
-    update_pid(g.g2d.level, &g.g2d.pid)
-    force := g.g2d.pid.output
-    i := lowest_particle()
-    g.g2d.particles[i].force += {0, force, 0}
-}
-
-update_2d :: proc() {
-    update_level()
-    handle_pid()
-    update_particles(g.g2d.particles[:], two_d=true)
-}
-
-draw_2d :: proc() {
-	rl.BeginDrawing()
-	rl.ClearBackground(rl.RAYWHITE)
-    for p in g.g2d.particles {
-        rl.DrawCircle(cast(i32)p.position.x, cast(i32)p.position.y, 10, rl.GREEN)
-    }
-    rl.DrawText(rl.TextFormat("%f radian", g.g2d.level), 10, 10, 20, rl.BLACK)
-    draw_pid_stats(&g.g2d.pid)
-    rl.DrawText(fmt.caprintf("edit mode: %v", g.g2d.edit), 10, 30, 20, rl.GREEN)
-	rl.EndDrawing()
-}
-
-handle_input :: proc() {
-    if (rl.IsKeyDown(.P)) {
-        g.g2d.edit = .Proportional
-    } else if (rl.IsKeyDown(.I)) {
-        g.g2d.edit = .Integral
-    } else if (rl.IsKeyDown(.D)) {
-        g.g2d.edit = .Derivative
-    } else if (rl.IsKeyDown(.N)) {
-        g.g2d.edit = .None
-    }
-
-    mw := cast(f64)rl.GetMouseWheelMove() / 10.0
-
-    switch g.g2d.edit {
-    case .Proportional:
-        g.g2d.pid.Kp += mw
-    case .Integral:
-        g.g2d.pid.Ki += mw
-    case .Derivative:
-        g.g2d.pid.Kd += mw
-    case .None:
-    }
 }
 
 handle_input_3d :: proc(g: ^Game_3D) {
@@ -589,12 +509,6 @@ draw_3d :: proc(g: ^Game_3D) {
     rl.EndDrawing()
 }
 
-game_2d :: proc() {
-    update_2d()
-    draw_2d()
-    handle_input()
-}
-
 game_3d :: proc() {
     update_3d()
     draw_3d(&g.g3d)
@@ -603,7 +517,6 @@ game_3d :: proc() {
 
 @(export)
 game_update :: proc() {
-    // game_2d()
     game_3d()
 
 	// Everything on tracking allocator is valid until end-of-frame.
@@ -630,29 +543,10 @@ game_init :: proc() {
     bpos := [3]f64{150, 120, 0}
 	g^ = Game_Memory {
 		run = true,
-        g2d = {
-            particles = {
-                {
-                    radius = 10,
-                    position = apos,
-                    position_old = apos,
-                    mass = 10,
-                },
-                {
-                    radius = 10,
-                    position = bpos,
-                    position_old = bpos,
-                    mass = 10,
-                },
-            },
-            edit = .None,
-        },
         dt = 0.001,
 	}
 
     set_game_3d_default(&g.g3d)
-
-    init_pid(&g.g2d.pid)
 
     for &p in g.g3d.pid {
         init_pid(&p)
