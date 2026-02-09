@@ -54,6 +54,10 @@ Pid_Type :: enum {
     None,
 }
 
+View_Mode :: enum {
+    Top, Left,
+}
+
 Particle :: struct {
     motor_speed: f64,
     tangential_force : [3]f64,
@@ -87,11 +91,11 @@ Game_3D :: struct {
     particles : [4]Particle,
     camera: rl.Camera3D,
     gyro : [3]f64,
-    prev_yaw : f64,
     pid : [3]PID_Controller,
     edit: Edit_Mode,
     selected_pid: Pid_Type,
     paused: bool,
+    view_mode: View_Mode,
 }
 
 Game_Memory :: struct {
@@ -341,6 +345,29 @@ handle_input_3d :: proc(g: ^Game_3D) {
         case .None:
         }
     }
+
+    if rl.IsKeyPressed(.PERIOD) || rl.IsKeyPressed(.SLASH) {
+        if rl.IsKeyPressed(.PERIOD) {
+            if g.view_mode == .Top do g.view_mode = .Left
+            else do g.view_mode = .Top
+        }
+
+        c := cast_f32(drone_center(g))
+        s := cast_f32(drone_side(g))
+        // raylib quirk; target and position x,y cannot match exactly!!
+        p := g.view_mode == .Top ? c + {0.0001, 0.0001, 3} : s + {3, 0.001, 0.0001}
+        t := g.view_mode == .Top ? c : s
+        g.camera = {
+            position = p,
+            target = t,
+            up = {0.0, 0.0, 1.0},
+            fovy = 90.0,
+            projection = .PERSPECTIVE,
+        }
+
+    }
+
+
     
     if rl.IsKeyPressed(.L) {
         g.paused = !g.paused
@@ -374,7 +401,6 @@ update_gyro :: proc(g: ^Game_3D) {
     g.gyro[0] = linalg.angle_between(fc.yz, [2]f64{0, -1}) - math.PI / 2
     g.gyro[1] = linalg.angle_between(sc.xz, [2]f64{0, -1}) - math.PI / 2
     
-    g.prev_yaw = g.gyro[2]
     g.gyro[2] = linalg.angle_between(sc.xy, [2]f64{1, 0}) * math.sign(linalg.cross(sc.xy, [2]f64{1, 0}))
     
     // expanded rotation matrix
@@ -408,7 +434,7 @@ calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
     assert(val >= 0.0)
     assert(val <= 1.0)
     
-    K_T :: 0.0007 // what should this be???
+    K_T :: 0.01 // what should this be???
     ω :: MAX_MOTOR_RPS
     MAX_TORQUE :: K_T * ω*ω
     DISTANCE_FROM_CENTER :: 1
@@ -446,8 +472,7 @@ clamp_motor_speed :: proc(a, b: ^f64) {
 }
 
 handle_pid3d :: proc(g: ^Game_3D) {
-    for i in 0..<2 do update_pid(g.gyro[i], &g.pid[i])
-    update_pid(g.gyro[2] - g.prev_yaw, &g.pid[2])
+    for i in 0..<3 do update_pid(g.gyro[i]/math.TAU, &g.pid[i])
     ps := &g.particles
     po := math.tanh(g.pid[0].output)
     ro := math.tanh(g.pid[1].output)
@@ -511,10 +536,9 @@ draw_drone :: proc(g: ^Game_3D) {
     }
 }
 
-draw_gyro :: proc(gyro: [3]f64, prev_yaw: f64) {
+draw_gyro :: proc(gyro: [3]f64) {
     gyro_deg := gyro * 180 / math.PI
-    prev_yaw_deg := prev_yaw * 180 / math.PI
-    rl.DrawText(fmt.caprintf("Pitch: %f\nRoll:   %f\nYaw diff:   %f", gyro_deg.x, gyro_deg.y, gyro_deg.z - prev_yaw_deg), 10, 10, 20, rl.BLACK)
+    rl.DrawText(fmt.caprintf("Pitch: %f\nRoll:   %f\nYaw:   %f", gyro_deg.x, gyro_deg.y, gyro_deg.z), 10, 10, 20, rl.BLACK)
 }
 
 cast_f32 :: proc(a: [3]f64) -> [3]f32 {
@@ -572,7 +596,7 @@ draw_3d :: proc(g: ^Game_3D) {
     draw_force_vectors(g)
     rl.EndMode3D()
 
-    draw_gyro(g.gyro, g.prev_yaw)
+    draw_gyro(g.gyro)
     end_y : i32 = 100
     end_y = draw_pid_stats(&g.pid[0], end_y)
     end_y = draw_pid_stats(&g.pid[1], end_y)
@@ -589,18 +613,18 @@ draw_3d :: proc(g: ^Game_3D) {
     rl.EndDrawing()
 }
 
-update_3d :: proc() {
-    rl.UpdateCamera(&g.g3d.camera, .FREE)
-    if !g.g3d.paused {
-        update_gyro(&g.g3d)
-        handle_pid3d(&g.g3d)
-        update_particles(g.g3d.particles[:])
-        for link in g.g3d.drone do update_link(g.g3d.particles[:], link)
+update_3d :: proc(g: ^Game_3D) {
+    rl.UpdateCamera(&g.camera, .FREE)
+    if !g.paused {
+        update_gyro(g)
+        handle_pid3d(g)
+        update_particles(g.particles[:])
+        for link in g.drone do update_link(g.particles[:], link)
     }
 }
 
 game_3d :: proc() {
-    update_3d()
+    update_3d(&g.g3d)
     draw_3d(&g.g3d)
     handle_input_3d(&g.g3d)
 }
