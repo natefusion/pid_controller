@@ -474,9 +474,9 @@ clamp_motor_speed :: proc(a, b: ^f64) {
 handle_pid3d :: proc(g: ^Game_3D) {
     for i in 0..<3 do update_pid(g.gyro[i]/math.TAU, &g.pid[i])
     ps := &g.particles
-    po := math.tanh(g.pid[0].output)
-    ro := math.tanh(g.pid[1].output)
-    yo := math.tanh(g.pid[2].output)
+    po := clamp(g.pid[0].output, -1, 1)
+    ro := clamp(g.pid[1].output, -1, 1)
+    yo := clamp(g.pid[2].output, -1, 1)
 
     i1 : [2]int
     if ro < 0 {
