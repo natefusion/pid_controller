@@ -33,6 +33,12 @@ import "core:math/linalg"
 import rl "vendor:raylib"
 
 PIXEL_WINDOW_HEIGHT :: 180
+WIDTH :: 1280
+HEIGHT :: 720
+
+// DEETS
+MAX_MOTOR_RPS :: 19_000/*RPM*/ / 60.0
+MOTOR_WEIGHT_KG :: 0.00295
 
 Edit_Mode :: enum {
     None,
@@ -49,17 +55,13 @@ Pid_Type :: enum {
 }
 
 Particle :: struct {
-    force : [3]f64,
-    torque : [3]f64,
-    prop_torque : [3]f64,
+    motor_speed: f64,
+    tangential_force : [3]f64,
     prop_force : [3]f64,
     prop_spin_dir : f64,
     position_old : [3]f64,
     position : [3]f64,
-    angular_position: [3]f64,
-    angular_position_old: [3]f64,
     mass: f64,
-    radius: f64,
 }
 
 Link :: struct {
@@ -85,9 +87,11 @@ Game_3D :: struct {
     particles : [4]Particle,
     camera: rl.Camera3D,
     gyro : [3]f64,
+    prev_yaw : f64,
     pid : [3]PID_Controller,
     edit: Edit_Mode,
     selected_pid: Pid_Type,
+    paused: bool,
 }
 
 Game_Memory :: struct {
@@ -109,28 +113,24 @@ set_game_3d_default :: proc(g: ^Game_3D) {
 
     g.particles = {
         { // front right
-            radius = 0.5,
             prop_spin_dir = 1,
             position = {1,1,20},
             position_old = {1,1,20},
             mass = 10,
         },
         { // front left
-            radius = 0.5,
             prop_spin_dir = -1,
             position = {-1,1,20},
             position_old = {-1,1,20},
             mass = 10,
         },
         { // back right
-            radius = 0.5,
             prop_spin_dir = -1,
             position = {1,-1,20},
             position_old = {1,-1,20},
             mass = 10,
         },
         { // back left
-            radius = 0.5,
             prop_spin_dir = 1,
             position = {-1,-1,20},
             position_old = {-1,-1,20},
@@ -143,10 +143,12 @@ set_game_3d_default :: proc(g: ^Game_3D) {
         {p = 0, p1 = 2, length = 2},
         {p = 1, p1 = 3, length = 2},
         {p = 3, p1 = 2, length = 2},
-        
         {p = 0, p1 = 3, length = math.sqrt_f64(8.0)},
         {p = 1, p1 = 2, length = math.sqrt_f64(8.0)},
     }
+    g.paused = false
+
+    // g.pid[2].setpoint = -0.2
 }
 
 update_link :: proc(ps: []Particle, link : Link) {
@@ -170,8 +172,8 @@ draw_links :: proc(g: ^Game_3D) {
 
 init_pid :: proc(using pid: ^PID_Controller) {
     Kp = 50.0
-    Ki = 50.0
-    Kd = 50.0
+    Ki = 20.0
+    Kd = 10.0
     setpoint = 0.0
     A = {
         Kp + Ki*g.dt + Kd/g.dt,
@@ -224,17 +226,14 @@ draw_pid_stats :: proc(pid: ^PID_Controller, start_y: i32 = 10) -> (end_y: i32) 
 }
 
 update_particle :: proc(p: ^Particle) {
+    gravity :: [3]f64{0, 0, -10}
+    force := p.tangential_force + p.prop_force + gravity
     temp := p.position
-    a := p.force / p.mass
+    a := force / p.mass
     x := a * g.dt * g.dt
     p.position = 2*p.position - p.position_old + x
     p.position_old = temp
-    p.force = 0
     
-}
-
-gravity :: proc(p: ^Particle) {
-    p.force += {0, 0, -10}
 }
 
 handle_ground_collision :: proc(p: ^Particle) {
@@ -253,7 +252,6 @@ handle_ground_collision_3d :: proc(p: ^Particle) {
 
 update_particles :: proc(particles: []Particle) {
     for &p in particles {
-        gravity(&p)
         update_particle(&p)
         handle_ground_collision_3d(&p)
     }
@@ -345,13 +343,15 @@ handle_input_3d :: proc(g: ^Game_3D) {
         case .None:
         }
     }
-
+    
+    if rl.IsKeyPressed(.L) {
+        g.paused = !g.paused
+    }
 
     if rl.IsKeyPressed(.R) {
         for &p in g.pid do reset_pid(&p)
         set_game_3d_default(g)
     }
-
     
 }
 
@@ -360,24 +360,30 @@ draw_force_vectors :: proc(g: ^Game_3D) {
         end_pos := p.position - p.prop_force
         rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
 
-        end_pos = p.position - p.prop_torque
+        end_pos = p.position - p.tangential_force
         rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
     }
 }
 
 update_gyro :: proc(g: ^Game_3D) {
-    a := g.particles[0].position
     n := drone_normal(g)
     c := drone_center(g)
-    g.gyro[0] = linalg.angle_between(n.yz, c.yz)
-    g.gyro[1] = linalg.angle_between(n.xz, c.xz)
-    g.gyro[2] = linalg.atan2(a.x, a.y) - math.PI / 4 - 0.1
+    s := drone_side(g)
+    f := drone_front(g)
 
+    fc := f - c
+    sc := s - c
+    g.gyro[0] = linalg.angle_between(fc.yz, [2]f64{0, -1}) - math.PI / 2
+    g.gyro[1] = linalg.angle_between(sc.xz, [2]f64{0, -1}) - math.PI / 2
+    
+    g.prev_yaw = g.gyro[2]
+    g.gyro[2] = linalg.angle_between(sc.xy, [2]f64{1, 0}) * math.sign(linalg.cross(sc.xy, [2]f64{1, 0}))
+    
     // expanded rotation matrix
     // rotate pitch and roll by 45 deg
-    new_pitch := g.gyro[0] * math.cos_f64(math.PI / 4.0) - g.gyro[1] * math.sin_f64(math.PI / 4.0)
-    new_roll :=  g.gyro[0] * math.sin_f64(math.PI / 4.0) + g.gyro[1] * math.cos_f64(math.PI / 4.0)
-
+    rot_amount := math.PI / 4 - (g.gyro[2])
+    new_pitch := g.gyro[0] * math.cos(rot_amount) - g.gyro[1] * math.sin(rot_amount)
+    new_roll :=  g.gyro[0] * math.sin(rot_amount) + g.gyro[1] * math.cos(rot_amount)
     g.gyro[0] = new_pitch
     g.gyro[1] = new_roll
 }
@@ -387,73 +393,140 @@ hypot :: proc(a, b: f64) -> (c: f64) {
     return
 }
 
-handle_pid3d :: proc(g: ^Game_3D) {
-    update_pid(g.gyro[0], &g.pid[0])
-    update_pid(g.gyro[1], &g.pid[1])
-    update_pid(g.gyro[2], &g.pid[2])
+calc_thrust :: proc(val: f64) -> (F_thrust: f64) {
+    assert(val >= 0.0)
+    assert(val <= 1.0)
     
-    pitch_force := g.pid[0].output
-    roll_force := g.pid[1].output
-    yaw_force := g.pid[2].output
+    C_T :: 1000.0 // unitless; what should this be???
+    ρ :: 1.225 // kg/m^3
+    D :: 0.031 // m
+    D4 :: D*D*D*D
+    n := val * MAX_MOTOR_RPS
+    F_thrust = C_T * ρ * n*n * D4
+    return
+}
 
-    ps := &g.particles
-    for &p in ps do p.prop_force = 0
-
-    // if roll_force > 0 {
-    //     ps[0].prop_force += drone_normal(g) * ps[0].prop_spin_dir * abs(roll_force)
-    // } else if roll_force < 0 {
-    //     ps[3].prop_force += drone_normal(g) * ps[3].prop_spin_dir * abs(roll_force)
-    // }
+calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
+    assert(val >= 0.0)
+    assert(val <= 1.0)
     
-    // if pitch_force > 0 {
-    //     ps[2].prop_force += drone_normal(g) * ps[2].prop_spin_dir * abs(pitch_force)
-    // } else if pitch_force < 0 {
-    //     ps[1].prop_force += drone_normal(g) * ps[1].prop_spin_dir * abs(pitch_force)
-    // }
+    K_T :: 1.0 // what should this be???
+    ω :: MAX_MOTOR_RPS
+    MAX_TORQUE :: K_T * ω*ω
+    DISTANCE_FROM_CENTER :: 20
+    T_m := val * MAX_TORQUE
+    F_tangential = T_m / DISTANCE_FROM_CENTER
+    return
+}
 
-    if yaw_force > 0 {
-        ps[0].prop_force += drone_normal(g) * ps[0].prop_spin_dir * abs(yaw_force)
-        ps[3].prop_force += drone_normal(g) * ps[3].prop_spin_dir * abs(yaw_force)
-        
-        // ps[1].prop_force -= drone_normal(g) * ps[1].prop_spin_dir * abs(yaw_force)
-        // ps[2].prop_force -= drone_normal(g) * ps[2].prop_spin_dir * abs(yaw_force)
-    } else {
-        // ps[0].prop_force += drone_normal(g) * ps[0].prop_spin_dir * abs(yaw_force)
-        // ps[3].prop_force += drone_normal(g) * ps[3].prop_spin_dir * abs(yaw_force)
-        
-        ps[1].prop_force += drone_normal(g) * ps[1].prop_spin_dir * abs(yaw_force)
-        ps[2].prop_force += drone_normal(g) * ps[2].prop_spin_dir * abs(yaw_force)
+clamp_motor_speed :: proc(a, b: ^f64) {
+    compare :: proc(x, y: f64) -> (x1, y1: f64) {
+        if x > 1 {
+            extra := x - 1
+            x1 = 1
+            y1 = y - extra
+            if y1 < 0 do y1 = 0
+        } else if x < 0 {
+            extra := math.abs(x)
+            x1 = 0
+            y1 = y + extra
+            if y1 > 1 do y1 = 1
+        } else {
+            x1 = x
+            y1 = y
+        }
+        return
     }
 
-    ps[0].force += ps[0].prop_force
-    ps[1].force += ps[1].prop_force
-    ps[2].force += ps[2].prop_force
-    ps[3].force += ps[3].prop_force
+    a1, b1 := compare(a^, b^)
+    b2, a2 := compare(b1, a1)
+    assert(a2 <= 1 && a2 >= 0)
+    assert(b2 <= 1 && b2 >= 0)
+
+    a^ = a2
+    b^ = b2
 }
 
+handle_pid3d :: proc(g: ^Game_3D) {
+    for i in 0..<2 do update_pid(g.gyro[i], &g.pid[i])
+    update_pid(g.gyro[2] - g.prev_yaw, &g.pid[2])
+    ps := &g.particles
+    po := math.tanh(g.pid[0].output)
+    ro := math.tanh(g.pid[1].output)
+    yo := math.tanh(g.pid[2].output)
 
-update_3d :: proc() {
-    rl.UpdateCamera(&g.g3d.camera, .FREE)
-    update_gyro(&g.g3d)
-    handle_pid3d(&g.g3d)
-    update_particles(g.g3d.particles[:])
-    for link in g.g3d.drone do update_link(g.g3d.particles[:], link)
+    i1 : [2]int
+    if ro < 0 {
+        ps[0].motor_speed = 0
+        ps[3].motor_speed = math.abs(ro)
+        i1 = {3, 0}
+    } else {
+        i1 = {0, 3}
+        ps[0].motor_speed = math.abs(ro)
+        ps[3].motor_speed = 0
+    }
+
+    i2 : [2]int
+    if po > 0 {
+        i2 = {1, 2}
+        ps[1].motor_speed = 0
+        ps[2].motor_speed = math.abs(po)
+    } else {
+        i2 = {1, 2}
+        ps[1].motor_speed = math.abs(po)
+        ps[2].motor_speed = 0
+    }
+
+
+
+    if ps[i1[0]].motor_speed > ps[i2[0]].motor_speed {
+        i1, i2 = i2, i1
+    }
+    
+    if yo > 0 {
+        ps[i1[0]].motor_speed -= yo
+        ps[i1[1]].motor_speed -= yo
+        ps[i2[0]].motor_speed += yo
+        ps[i2[1]].motor_speed += yo
+    } else {
+        ps[i2[0]].motor_speed += yo
+        ps[i2[1]].motor_speed += yo
+        ps[i1[0]].motor_speed -= yo
+        ps[i1[1]].motor_speed -= yo
+    }
+
+
+    c := drone_center(g)
+    for &p in ps {
+        p.motor_speed = clamp(p.motor_speed, 0, 1)
+        p.prop_force = drone_normal(g) * calc_thrust(p.motor_speed)
+
+        plane := linalg.normalize(linalg.cross(p.position - c, drone_normal(g)))
+        p.tangential_force = p.prop_spin_dir * plane * calc_tangential_force(p.motor_speed)
+    }
+    
 }
+
 
 draw_drone :: proc(g: ^Game_3D) {
-    lowest, _, _, _ := lowest_particle_3d(g)
+    radius :: 0.5
+    colors := [4]rl.Color{rl.RED, rl.GREEN, rl.PURPLE, rl.BLUE}
     for p, i in g.particles {
+        if !(i == 0 || i == 3) do continue 
         if p.prop_spin_dir > 0 {
-            rl.DrawSphere({cast(f32)p.position.x, cast(f32)p.position.y, cast(f32)p.position.z}, cast(f32)p.radius, i == lowest ? rl.RED : rl.GREEN)
+            rl.DrawSphere({cast(f32)p.position.x, cast(f32)p.position.y, cast(f32)p.position.z},
+                          cast(f32)radius,  colors[i])
         } else {
-            rl.DrawCube({cast(f32)p.position.x, cast(f32)p.position.y, cast(f32)p.position.z}, cast(f32)p.radius*2, cast(f32)p.radius*2, cast(f32)p.radius*2, i == lowest ? rl.RED : rl.GREEN)
+            rl.DrawCube({cast(f32)p.position.x, cast(f32)p.position.y, cast(f32)p.position.z},
+                        cast(f32)radius*2, cast(f32)radius*2, cast(f32)radius*2, colors[i])
         }
     }
 }
 
-draw_gyro :: proc(gyro: [3]f64) {
+draw_gyro :: proc(gyro: [3]f64, prev_yaw: f64) {
     gyro_deg := gyro * 180 / math.PI
-    rl.DrawText(fmt.caprintf("Pitch: %v\nRoll:   %v\nYaw:   %v", gyro_deg.x, gyro_deg.y, gyro_deg.z), 10, 10, 20, rl.BLACK)
+    prev_yaw_deg := prev_yaw * 180 / math.PI
+    rl.DrawText(fmt.caprintf("Pitch: %f\nRoll:   %f\nYaw diff:   %f", gyro_deg.x, gyro_deg.y, gyro_deg.z - prev_yaw_deg), 10, 10, 20, rl.BLACK)
 }
 
 cast_f32 :: proc(a: [3]f64) -> [3]f32 {
@@ -472,6 +545,11 @@ drone_front :: proc(g: ^Game_3D) -> [3]f64 {
     return g.particles[0].position + diff1/2
 }
 
+drone_side :: proc(g: ^Game_3D) -> [3]f64 {
+    diff1 := g.particles[2].position - g.particles[0].position
+    return g.particles[0].position + diff1/2
+}
+
 drone_normal :: proc(g: ^Game_3D) -> [3]f64 {
     // the positions of the particle should be determined by the normal, not the other way around
     c := drone_center(g)
@@ -483,22 +561,21 @@ drone_normal :: proc(g: ^Game_3D) -> [3]f64 {
 draw_normal :: proc(g: ^Game_3D) {
     c := cast_f32(drone_center(g))
     normal := cast_f32(drone_normal(g))
-    front := cast_f32(drone_front(g))
+    f := cast_f32(drone_front(g))
+    s := cast_f32(drone_side(g))
     rl.DrawSphere(c + normal, 0.125, rl.RED)
     rl.DrawSphere(c, 0.125, rl.PURPLE)
-    rl.DrawSphere(front, 0.125, rl.YELLOW)
+    rl.DrawSphere(f, 0.125, rl.YELLOW)
+    rl.DrawSphere(s, 0.125, rl.WHITE)
+    rl.DrawLine3D(c, c + [3]f32{0, 0, -1}, rl.BLUE)
+    rl.DrawLine3D(c, f, rl.BLUE)
+    rl.DrawLine3D(c, s, rl.BLUE)
+    rl.DrawLine3D(c, c + [3]f32{1, 0, 0}, rl.BLUE)
 }
 
 draw_3d :: proc(g: ^Game_3D) {
     rl.BeginDrawing()
     rl.ClearBackground(rl.RAYWHITE)
-    draw_gyro(g.gyro)
-    end_y : i32 = 100
-    end_y = draw_pid_stats(&g.pid[0], end_y)
-    end_y = draw_pid_stats(&g.pid[1], end_y)
-    end_y = draw_pid_stats(&g.pid[2], end_y)
-    rl.DrawText(fmt.caprintf("edit mode: %v", g.edit), 10, end_y, 20, rl.GREEN)
-    rl.DrawText(fmt.caprintf("selected pid: %v", g.selected_pid), 10, end_y+20, 20, rl.GREEN)
     rl.BeginMode3D(g.camera)
     draw_drone(g)
     rl.DrawGrid(10, 2.0)
@@ -506,7 +583,32 @@ draw_3d :: proc(g: ^Game_3D) {
     draw_links(g)
     draw_force_vectors(g)
     rl.EndMode3D()
+
+    draw_gyro(g.gyro, g.prev_yaw)
+    end_y : i32 = 100
+    end_y = draw_pid_stats(&g.pid[0], end_y)
+    end_y = draw_pid_stats(&g.pid[1], end_y)
+    end_y = draw_pid_stats(&g.pid[2], end_y)
+    rl.DrawText(fmt.caprintf("edit  mode: %v", g.edit), 10, end_y, 20, rl.GREEN)
+    rl.DrawText(fmt.caprintf("selected pid: %v", g.selected_pid), 10, end_y+20, 20, rl.GREEN)
+    rl.DrawText(fmt.caprintf("Pos %.3f\n", drone_center(g)), 10, end_y+40, 20, rl.GREEN)
+    for p, i in g.particles {
+        rl.DrawText(fmt.caprintf("Motor speed %v: %.3f\n", i, p.motor_speed), 10, end_y+i32(20*(3+i)), 20, rl.GREEN)
+    }
+
+    if g.paused do rl.DrawText(fmt.caprintf("[Paused]"), 10, HEIGHT - 20, 20, rl.GREEN)
+
     rl.EndDrawing()
+}
+
+update_3d :: proc() {
+    rl.UpdateCamera(&g.g3d.camera, .FREE)
+    if !g.g3d.paused {
+        update_gyro(&g.g3d)
+        handle_pid3d(&g.g3d)
+        update_particles(g.g3d.particles[:])
+        for link in g.g3d.drone do update_link(g.g3d.particles[:], link)
+    }
 }
 
 game_3d :: proc() {
@@ -526,7 +628,7 @@ game_update :: proc() {
 @(export)
 game_init_window :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
-	rl.InitWindow(1280, 720, "Pid Controller")
+	rl.InitWindow(WIDTH, HEIGHT, "Pid Controller")
 	rl.SetWindowPosition(200, 200)
 	rl.SetTargetFPS(60)
 	rl.SetExitKey(nil)

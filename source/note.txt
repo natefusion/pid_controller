@@ -30,3 +30,11 @@ use the angular velocity to calculate the thrust of the props (for the particle 
 and the torque of the props
 use the torque to find the tangential force (for the particle sim)
 use the total torque with the yaw PID
+
+some stats:
+Motor RPM: 19,000 RPM
+Motor weight: 2.95 g
+
+Prop diameter: 1.2 in == 31mm
+Prop pitch: 1.9 in
+Weight: 0.18 g
