@@ -114,14 +114,14 @@ set_game_3d_default :: proc(g: ^Game_3D) {
     g.particles = {
         { // front right
             prop_spin_dir = 1,
-            position = {1,1,20},
-            position_old = {1,1,20},
+            position = {1,1,21},
+            position_old = {1,1,21},
             mass = 10,
         },
         { // front left
             prop_spin_dir = -1,
-            position = {-1,1,20},
-            position_old = {-1,1,20},
+            position = {-1,1,21},
+            position_old = {-1,1,21},
             mass = 10,
         },
         { // back right
@@ -147,8 +147,6 @@ set_game_3d_default :: proc(g: ^Game_3D) {
         {p = 1, p1 = 2, length = math.sqrt_f64(8.0)},
     }
     g.paused = false
-
-    // g.pid[2].setpoint = -0.2
 }
 
 update_link :: proc(ps: []Particle, link : Link) {
@@ -171,9 +169,9 @@ draw_links :: proc(g: ^Game_3D) {
 }
 
 init_pid :: proc(using pid: ^PID_Controller) {
-    Kp = 50.0
-    Ki = 20.0
-    Kd = 10.0
+    Kp = 1.0
+    Ki = 0.2
+    Kd = 0.2
     setpoint = 0.0
     A = {
         Kp + Ki*g.dt + Kd/g.dt,
@@ -410,10 +408,10 @@ calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
     assert(val >= 0.0)
     assert(val <= 1.0)
     
-    K_T :: 1.0 // what should this be???
+    K_T :: 0.0007 // what should this be???
     ω :: MAX_MOTOR_RPS
     MAX_TORQUE :: K_T * ω*ω
-    DISTANCE_FROM_CENTER :: 20
+    DISTANCE_FROM_CENTER :: 1
     T_m := val * MAX_TORQUE
     F_tangential = T_m / DISTANCE_FROM_CENTER
     return
@@ -467,7 +465,7 @@ handle_pid3d :: proc(g: ^Game_3D) {
     }
 
     i2 : [2]int
-    if po > 0 {
+    if po < 0 {
         i2 = {1, 2}
         ps[1].motor_speed = 0
         ps[2].motor_speed = math.abs(po)
@@ -495,7 +493,6 @@ handle_pid3d :: proc(g: ^Game_3D) {
         plane := linalg.normalize(linalg.cross(p.position - c, drone_normal(g)))
         p.tangential_force = p.prop_spin_dir * plane * calc_tangential_force(p.motor_speed)
     }
-    
 }
 
 
