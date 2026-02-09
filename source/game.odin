@@ -472,29 +472,20 @@ handle_pid3d :: proc(g: ^Game_3D) {
         ps[1].motor_speed = 0
         ps[2].motor_speed = math.abs(po)
     } else {
-        i2 = {1, 2}
+        i2 = {2, 1}
         ps[1].motor_speed = math.abs(po)
         ps[2].motor_speed = 0
     }
-
 
 
     if ps[i1[0]].motor_speed > ps[i2[0]].motor_speed {
         i1, i2 = i2, i1
     }
     
-    if yo > 0 {
-        ps[i1[0]].motor_speed -= yo
-        ps[i1[1]].motor_speed -= yo
-        ps[i2[0]].motor_speed += yo
-        ps[i2[1]].motor_speed += yo
-    } else {
-        ps[i2[0]].motor_speed += yo
-        ps[i2[1]].motor_speed += yo
-        ps[i1[0]].motor_speed -= yo
-        ps[i1[1]].motor_speed -= yo
-    }
-
+    ps[i1[0]].motor_speed -= yo
+    ps[i1[1]].motor_speed -= yo
+    ps[i2[0]].motor_speed += yo
+    ps[i2[1]].motor_speed += yo
 
     c := drone_center(g)
     for &p in ps {
