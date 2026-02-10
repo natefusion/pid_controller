@@ -102,11 +102,13 @@ Game_3D :: struct {
     particles : [4]Particle,
     camera: rl.Camera3D,
     gyro : [3]f64,
+    throttle : f64,
     pid : [3]PID_Controller,
     edit: Edit_Mode,
     selected_pid: Pid_Type,
     paused: bool,
     view_mode: View_Mode,
+    slomo: bool,
 }
 
 Game_Memory :: struct {
@@ -129,11 +131,11 @@ set_game_3d_default :: proc(g: ^Game_3D) {
     g.particles = {
         { // front right
             prop_spin_dir = 1,
-            position = {1,1,21},
+            position = {1,1,20},
         },
         { // front left
             prop_spin_dir = -1,
-            position = {-1,1,21},
+            position = {-1,1,20},
         },
         { // back right
             prop_spin_dir = -1,
@@ -317,6 +319,26 @@ handle_input_3d :: proc(g: ^Game_3D) {
         }
     }
 
+    if rl.IsKeyPressed(.V) {
+        g.slomo = !g.slomo
+    }
+
+    if rl.IsKeyPressed(.EQUAL) {
+        g.throttle += 0.1
+        g.throttle = clamp(g.throttle, 0, 1);
+    } else if rl.IsKeyPressed(.MINUS) {
+        g.throttle -= 0.1
+        g.throttle = clamp(g.throttle, 0, 1);
+    }
+
+    if rl.IsKeyPressed(.SEMICOLON) {
+        g.pid[2].setpoint += 0.1 * math.PI
+        g.pid[2].setpoint = clamp(g.pid[2].setpoint, -math.PI, math.PI);
+    } else if rl.IsKeyPressed(.APOSTROPHE) {
+        g.pid[2].setpoint -= 0.1 * math.PI
+        g.pid[2].setpoint = clamp(g.pid[2].setpoint, -math.PI, math.PI);
+    }
+
     if rl.IsKeyPressed(.PERIOD) || rl.IsKeyPressed(.SLASH) {
         if rl.IsKeyPressed(.PERIOD) {
             if g.view_mode == .Top do g.view_mode = .Left
@@ -386,7 +408,7 @@ calc_thrust :: proc(val: f64) -> (F_thrust: f64) {
     assert(val >= 0.0)
     assert(val <= 1.0)
     
-    C_T :: 1.0 // unitless (coefficient of thrust)
+    C_T :: 4.0 // unitless (coefficient of thrust)
     ρ :: 1.225 // kg/m^3 (density of air)
     D :: 0.031 // m (diamter of the propeller)
     D4 :: D*D*D*D
@@ -399,7 +421,7 @@ calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
     assert(val >= 0.0)
     assert(val <= 1.0)
 
-    K_T :: 0.01 // kg*m^2 (aerodynamic drag coefficient)
+    K_T :: 0.0000001 // kg*m^2 (aerodynamic drag coefficient)
     ω :: MAX_MOTOR_RPS*math.TAU
     MAX_TORQUE :: K_T * ω*ω
     T_m := val * MAX_TORQUE
@@ -444,24 +466,24 @@ handle_pid3d :: proc(g: ^Game_3D) {
 
     i1 : [2]int
     if ro < 0 {
-        ps[0].motor_speed = 0
-        ps[3].motor_speed = math.abs(ro)
+        ps[0].motor_speed = g.throttle - math.abs(ro)
+        ps[3].motor_speed = g.throttle + math.abs(ro)
         i1 = {3, 0}
     } else {
         i1 = {0, 3}
-        ps[0].motor_speed = math.abs(ro)
-        ps[3].motor_speed = 0
+        ps[0].motor_speed = g.throttle + math.abs(ro)
+        ps[3].motor_speed = g.throttle - math.abs(ro)
     }
 
     i2 : [2]int
     if po < 0 {
         i2 = {1, 2}
-        ps[1].motor_speed = 0
-        ps[2].motor_speed = math.abs(po)
+        ps[1].motor_speed = g.throttle - math.abs(po)
+        ps[2].motor_speed = g.throttle + math.abs(po)
     } else {
         i2 = {2, 1}
-        ps[1].motor_speed = math.abs(po)
-        ps[2].motor_speed = 0
+        ps[1].motor_speed = g.throttle + math.abs(po)
+        ps[2].motor_speed = g.throttle - math.abs(po)
     }
 
 
@@ -572,6 +594,10 @@ draw_3d :: proc(g: ^Game_3D) {
         rl.DrawText(fmt.caprintf("Motor speed %v: %.3f\n", i, p.motor_speed), 10, end_y+i32(20*(3+i)), 20, rl.GREEN)
     }
 
+    rl.DrawText(fmt.caprintf("Rot: %f", g.pid[2].setpoint * 180 / math.PI), 10, HEIGHT - 60, 20, rl.GREEN)
+    rl.DrawText(fmt.caprintf("Throttle: %f", g.throttle), 10, HEIGHT - 40, 20, rl.GREEN)
+
+    if g.slomo do rl.DrawText(fmt.caprintf("[Slomo (tm)]"), 110, HEIGHT - 20, 20, rl.GREEN)
     if g.paused do rl.DrawText(fmt.caprintf("[Paused]"), 10, HEIGHT - 20, 20, rl.GREEN)
 
     rl.EndDrawing()
@@ -591,7 +617,11 @@ game_3d :: proc() {
     update_3d(&g.g3d)
     draw_3d(&g.g3d)
     handle_input_3d(&g.g3d)
-    g.dt = f64(rl.GetFrameTime())
+    if g.g3d.slomo {
+        g.dt = 0.001
+    } else {
+        g.dt = f64(rl.GetFrameTime())
+    }
 }
 
 @(export)
