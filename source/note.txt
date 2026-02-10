@@ -61,4 +61,13 @@ West: Throttle
 Verdict: Flies perfectly. The N/S motors handle the pitch, while the E/W motors maintain the lift and keep the drone from tipping sideways.
 */
 
+(for yaw)
+https://danceswithcode.net/engineeringnotes/rotations_in_3d/rotations_in_3d_part1.html
+maybe use rotations matrices
+
+"Note also that although Euler angles are susceptible to gimbal lock, rotation matrices are not.
+ For every possible rotation there is one and only one rotation matrix.
+ Also, for rotation matrices, the mapping is continuous.
+ That is, small changes in rotation will always equate to small changes in the rotation matrix. "
+
 
