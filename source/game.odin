@@ -505,10 +505,10 @@ handle_pid3d :: proc(g: ^Game_3D) {
         i1, i2 = i2, i1
     }
     
-    ps[i1[0]].motor_speed -= yo
-    ps[i1[1]].motor_speed -= yo
-    ps[i2[0]].motor_speed += yo
-    ps[i2[1]].motor_speed += yo
+    ps[i1[0]].motor_speed -= ps[i1[0]].prop_spin_dir * yo
+    ps[i1[1]].motor_speed -= ps[i1[1]].prop_spin_dir * yo
+    ps[i2[0]].motor_speed -= ps[i2[0]].prop_spin_dir * yo
+    ps[i2[1]].motor_speed -= ps[i2[1]].prop_spin_dir * yo
 
     c := drone_center(g)
     for &p in ps {
