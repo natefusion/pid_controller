@@ -246,13 +246,6 @@ update_particle :: proc(p: ^Particle) {
     
 }
 
-handle_ground_collision :: proc(p: ^Particle) {
-    if p.position.y >= 700 {
-        p.position.y = 700
-        p.position_old.y = 700
-    }
-}
-
 handle_ground_collision_3d :: proc(p: ^Particle) {
     if (p.position.z <= 0.1) {
         p.position.z = 0.1
@@ -265,39 +258,6 @@ update_particles :: proc(particles: []Particle) {
         update_particle(&p)
         handle_ground_collision_3d(&p)
     }
-}
-
-lowest_particle_3d :: proc(g: ^Game_3D) -> (lowest, pitch_adj, roll_adj, opp: int) {
-    min_val := g.particles[0].position.z
-
-    for p, i in g.particles {
-        if p.position.z < min_val {
-            min_val = p.position.z
-            lowest = i
-        }
-    }
-
-    // make sure this matches the super particle
-    switch (lowest) {
-    case 0:
-        pitch_adj = 1
-        roll_adj = 2
-        opp = 3
-    case 1:
-        pitch_adj = 0
-        roll_adj = 3
-        opp = 2
-    case 2:
-        pitch_adj = 3
-        roll_adj = 0
-        opp = 1
-    case 3:
-        pitch_adj = 2
-        roll_adj = 1
-        opp = 0
-    }
-
-    return
 }
 
 handle_input_3d :: proc(g: ^Game_3D) {
@@ -418,11 +378,6 @@ update_gyro :: proc(g: ^Game_3D) {
     new_roll :=  g.gyro[0] * math.sin(rot_amount) + g.gyro[1] * math.cos(rot_amount)
     g.gyro[0] = new_pitch
     g.gyro[1] = new_roll
-}
-
-hypot :: proc(a, b: f64) -> (c: f64) {
-    c = math.sqrt(math.pow(a, 2) + math.pow(b, 2))
-    return
 }
 
 // https://web.mit.edu/16.unified/www/FALL/thermodynamics/notes/node86.html
