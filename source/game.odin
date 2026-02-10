@@ -106,6 +106,14 @@ Game_Memory :: struct {
 
 g: ^Game_Memory
 
+MOTOR_MASS :: 0.00295
+PROP_MASS :: 0.00019
+BATT_MASS :: 0.1
+ESP_MASS :: 0.04
+CHASSIS_MASS :: 0.2
+
+MASS :: 4*(MOTOR_MASS + PROP_MASS) + BATT_MASS + ESP_MASS + CHASSIS_MASS
+
 set_game_3d_default :: proc(g: ^Game_3D) {
     g.camera = {
         position = {0.0, -4.0, 25.0},
@@ -120,25 +128,25 @@ set_game_3d_default :: proc(g: ^Game_3D) {
             prop_spin_dir = 1,
             position = {1,1,21},
             position_old = {1,1,21},
-            mass = 10,
+            mass = MASS/4,
         },
         { // front left
             prop_spin_dir = -1,
             position = {-1,1,21},
             position_old = {-1,1,21},
-            mass = 10,
+            mass = MASS/4,
         },
         { // back right
             prop_spin_dir = -1,
             position = {1,-1,20},
             position_old = {1,-1,20},
-            mass = 10,
+            mass = MASS/4,
         },
         { // back left
             prop_spin_dir = 1,
             position = {-1,-1,20},
             position_old = {-1,-1,20},
-            mass = 10,
+            mass = MASS/4,
         },
     }
 
@@ -228,7 +236,7 @@ draw_pid_stats :: proc(pid: ^PID_Controller, start_y: i32 = 10) -> (end_y: i32) 
 }
 
 update_particle :: proc(p: ^Particle) {
-    gravity :: [3]f64{0, 0, -10}
+    gravity :: [3]f64{0, 0, -9.81}
     force := p.tangential_force + p.prop_force + gravity
     temp := p.position
     a := force / p.mass
@@ -417,15 +425,16 @@ hypot :: proc(a, b: f64) -> (c: f64) {
     return
 }
 
+// https://web.mit.edu/16.unified/www/FALL/thermodynamics/notes/node86.html
 calc_thrust :: proc(val: f64) -> (F_thrust: f64) {
     assert(val >= 0.0)
     assert(val <= 1.0)
     
-    C_T :: 1000.0 // unitless; what should this be???
-    ρ :: 1.225 // kg/m^3
-    D :: 0.031 // m
+    C_T :: 1.0 // unitless (coefficient of thrust)
+    ρ :: 1.225 // kg/m^3 (density of air)
+    D :: 0.031 // m (diamter of the propeller)
     D4 :: D*D*D*D
-    n := val * MAX_MOTOR_RPS
+    n := val * MAX_MOTOR_RPS*math.TAU
     F_thrust = C_T * ρ * n*n * D4
     return
 }
@@ -433,13 +442,13 @@ calc_thrust :: proc(val: f64) -> (F_thrust: f64) {
 calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
     assert(val >= 0.0)
     assert(val <= 1.0)
-    
-    K_T :: 0.01 // what should this be???
-    ω :: MAX_MOTOR_RPS
+
+    K_T :: 0.01 // kg*m^2 (aerodynamic drag coefficient)
+    ω :: MAX_MOTOR_RPS*math.TAU
     MAX_TORQUE :: K_T * ω*ω
-    DISTANCE_FROM_CENTER :: 1
+    METERS_FROM_CENTER :: 0.06 // estimate (not real)
     T_m := val * MAX_TORQUE
-    F_tangential = T_m / DISTANCE_FROM_CENTER
+    F_tangential = T_m / METERS_FROM_CENTER
     return
 }
 
@@ -627,6 +636,7 @@ game_3d :: proc() {
     update_3d(&g.g3d)
     draw_3d(&g.g3d)
     handle_input_3d(&g.g3d)
+    g.dt = f64(rl.GetFrameTime())
 }
 
 @(export)
