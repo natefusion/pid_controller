@@ -74,3 +74,19 @@ but probably quaternions
 https://danceswithcode.net/engineeringnotes/quaternions/quaternions.html
 
 
+actually, just normalize in the pid update function
+
+// 1. Calculate the raw difference
+float error = target_yaw - current_yaw;
+
+// 2. Wrap the error to -180..+180
+if (error > 180) {
+    error -= 360;
+} else if (error < -180) {
+    error += 360;
+}
+
+// 3. Feed THIS error into the PID
+pid_output = P * error + ...
+
+
