@@ -38,3 +38,27 @@ Motor weight: 2.95 g
 Prop diameter: 1.2 in == 31mm
 Prop pitch: 1.9 in
 Weight: 0.18 g
+
+(for pitch and roll)
+// definitely not right by the way
+// how will it ever take off????
+// all motors need to have power.
+// if the motor is stable, all motors will turn off and it will fall. so true.
+// add on a base throttle.
+
+/* google gipity
+
+The Correct "Plus" Configuration:
+
+North: Throttle - PID_Pitch
+
+South: Throttle + PID_Pitch
+
+East: Throttle
+
+West: Throttle
+
+Verdict: Flies perfectly. The N/S motors handle the pitch, while the E/W motors maintain the lift and keep the drone from tipping sideways.
+*/
+
+
