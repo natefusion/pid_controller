@@ -70,4 +70,7 @@ maybe use rotations matrices
  Also, for rotation matrices, the mapping is continuous.
  That is, small changes in rotation will always equate to small changes in the rotation matrix. "
 
+but probably quaternions
+https://danceswithcode.net/engineeringnotes/quaternions/quaternions.html
+
 
