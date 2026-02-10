@@ -38,7 +38,18 @@ HEIGHT :: 720
 
 // DEETS
 MAX_MOTOR_RPS :: 19_000/*RPM*/ / 60.0
-MOTOR_WEIGHT_KG :: 0.00295
+
+
+// kg
+MOTOR_MASS :: 0.00295
+PROP_MASS :: 0.00019
+BATT_MASS :: 0.1
+ESP_MASS :: 0.04
+CHASSIS_MASS :: 0.2
+MASS :: 4*(MOTOR_MASS + PROP_MASS) + BATT_MASS + ESP_MASS + CHASSIS_MASS
+
+PIXELS_PER_M :: 30
+MOTOR_TO_CENTER_M :: 0.06 // estimate (not real)
 
 Edit_Mode :: enum {
     None,
@@ -106,14 +117,6 @@ Game_Memory :: struct {
 
 g: ^Game_Memory
 
-MOTOR_MASS :: 0.00295
-PROP_MASS :: 0.00019
-BATT_MASS :: 0.1
-ESP_MASS :: 0.04
-CHASSIS_MASS :: 0.2
-
-MASS :: 4*(MOTOR_MASS + PROP_MASS) + BATT_MASS + ESP_MASS + CHASSIS_MASS
-
 set_game_3d_default :: proc(g: ^Game_3D) {
     g.camera = {
         position = {0.0, -4.0, 25.0},
@@ -127,36 +130,36 @@ set_game_3d_default :: proc(g: ^Game_3D) {
         { // front right
             prop_spin_dir = 1,
             position = {1,1,21},
-            position_old = {1,1,21},
-            mass = MASS/4,
         },
         { // front left
             prop_spin_dir = -1,
             position = {-1,1,21},
-            position_old = {-1,1,21},
-            mass = MASS/4,
         },
         { // back right
             prop_spin_dir = -1,
             position = {1,-1,20},
-            position_old = {1,-1,20},
-            mass = MASS/4,
         },
         { // back left
             prop_spin_dir = 1,
             position = {-1,-1,20},
-            position_old = {-1,-1,20},
-            mass = MASS/4,
         },
     }
 
+    for &p in g.particles {
+        p.position_old = p.position
+        p.mass = MASS / 4
+    }
+
+    hypot :: 2*MOTOR_TO_CENTER_M * PIXELS_PER_M
+    side := hypot / math.sqrt_f64(2)
+    
     g.drone = {
-        {p = 0, p1 = 1, length = 2},
-        {p = 0, p1 = 2, length = 2},
-        {p = 1, p1 = 3, length = 2},
-        {p = 3, p1 = 2, length = 2},
-        {p = 0, p1 = 3, length = math.sqrt_f64(8.0)},
-        {p = 1, p1 = 2, length = math.sqrt_f64(8.0)},
+        {p = 0, p1 = 1, length = side },
+        {p = 0, p1 = 2, length = side },
+        {p = 1, p1 = 3, length = side },
+        {p = 3, p1 = 2, length = side },
+        {p = 0, p1 = 3, length = hypot },
+        {p = 1, p1 = 2, length = hypot },
     }
     g.paused = false
 }
@@ -166,7 +169,7 @@ update_link :: proc(ps: []Particle, link : Link) {
     p1_pos := &ps[link.p1].position
 
     diff := p_pos^ - p1_pos^
-        dist := linalg.length(diff)
+    dist := linalg.length(diff)
     diff_factor := (link.length - dist) / dist
     offset := diff * diff_factor * 0.5
 
@@ -181,9 +184,9 @@ draw_links :: proc(g: ^Game_3D) {
 }
 
 init_pid :: proc(using pid: ^PID_Controller) {
-    Kp = 1.0
-    Ki = 0.2
-    Kd = 0.2
+    Kp = 0.0
+    Ki = 0.0
+    Kd = 0.0
     setpoint = 0.0
     A = {
         Kp + Ki*g.dt + Kd/g.dt,
@@ -334,8 +337,6 @@ handle_input_3d :: proc(g: ^Game_3D) {
         }
 
     }
-
-
     
     if rl.IsKeyPressed(.L) {
         g.paused = !g.paused
@@ -401,9 +402,8 @@ calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
     K_T :: 0.01 // kg*m^2 (aerodynamic drag coefficient)
     ω :: MAX_MOTOR_RPS*math.TAU
     MAX_TORQUE :: K_T * ω*ω
-    METERS_FROM_CENTER :: 0.06 // estimate (not real)
     T_m := val * MAX_TORQUE
-    F_tangential = T_m / METERS_FROM_CENTER
+    F_tangential = T_m / MOTOR_TO_CENTER_M
     return
 }
 
@@ -611,7 +611,6 @@ game_init_window :: proc() {
 	rl.SetExitKey(nil)
     rl.HideCursor()
     rl.DisableCursor()
-
 }
 
 @(export)
@@ -630,9 +629,6 @@ game_init :: proc() {
     for &p in g.g3d.pid {
         init_pid(&p)
     }
-    
-
-    // g.g3d.pid[2].setpoint = 0.2
 
 	game_hot_reloaded(g)
 }
