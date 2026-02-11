@@ -102,13 +102,16 @@ Game_3D :: struct {
     particles : [4]Particle,
     camera: rl.Camera3D,
     gyro : [3]f64,
-    throttle : f64,
+    data: [3][1000]f64,
+    data_idxs: [3]int,
     pid : [3]PID_Controller,
+    throttle : f64,
     edit: Edit_Mode,
     selected_pid: Pid_Type,
     paused: bool,
     view_mode: View_Mode,
     slomo: bool,
+ 
 }
 
 Game_Memory :: struct {
@@ -131,11 +134,11 @@ set_game_3d_default :: proc(g: ^Game_3D) {
     g.particles = {
         { // front right
             prop_spin_dir = 1,
-            position = {1,1,20},
+            position = {1,1,21},
         },
         { // front left
             prop_spin_dir = -1,
-            position = {-1,1,20},
+            position = {-1,1,21},
         },
         { // back right
             prop_spin_dir = -1,
@@ -154,6 +157,9 @@ set_game_3d_default :: proc(g: ^Game_3D) {
 
     hypot :: 2*MOTOR_TO_CENTER_M * PIXELS_PER_M
     side := hypot / math.sqrt_f64(2)
+
+    for &d in g.data do d = 0
+    for &d in g.data_idxs do d = 0
     
     g.drone = {
         {p = 0, p1 = 1, length = side },
@@ -186,9 +192,9 @@ draw_links :: proc(g: ^Game_3D) {
 }
 
 init_pid :: proc(using pid: ^PID_Controller) {
-    Kp = 0.0
-    Ki = 0.0
-    Kd = 0.0
+    Kp = 0.1
+    Ki = 0.1
+    Kd = 0.1
     setpoint = 0.0
     A = {
         Kp + Ki*g.dt + Kd/g.dt,
@@ -270,17 +276,17 @@ handle_input_3d :: proc(g: ^Game_3D) {
         g.edit = .Proportional
     } else if rl.IsKeyDown(.I) {
         g.edit = .Integral
-    } else if rl.IsKeyDown(.D) {
+    } else if rl.IsKeyDown(.F) {
         g.edit = .Derivative
     } else if rl.IsKeyDown(.N) {
         g.edit = .None
     }
 
     mw : f64 = 0
-    if rl.IsKeyDown(.LEFT_BRACKET) {
+    if rl.IsKeyPressed(.LEFT_BRACKET) {
         mw -= 0.1
     }
-    if rl.IsKeyDown(.RIGHT_BRACKET) {
+    if rl.IsKeyPressed(.RIGHT_BRACKET) {
         mw += 0.1
     }
 
@@ -365,7 +371,11 @@ handle_input_3d :: proc(g: ^Game_3D) {
     }
 
     if rl.IsKeyPressed(.R) {
-        for &p in g.pid do reset_pid(&p)
+        if rl.IsKeyDown(.LEFT_SHIFT) {
+            for &p in g.pid do init_pid(&p)
+        } else {
+            for &p in g.pid do reset_pid(&p)
+        }
         set_game_3d_default(g)
     }
     
@@ -458,7 +468,11 @@ clamp_motor_speed :: proc(a, b: ^f64) {
 }
 
 handle_pid3d :: proc(g: ^Game_3D) {
-    for i in 0..<3 do update_pid(g.gyro[i]/math.TAU, &g.pid[i])
+    for i in 0..<3 do update_pid(g.gyro[i], &g.pid[i])
+
+    for &d, i in g.data do d[g.data_idxs[i]] = g.gyro[i]
+    for &d, i in g.data_idxs do d = (d + 1) % len(g.data[i])
+    
     ps := &g.particles
     po := clamp(g.pid[0].output, -1, 1)
     ro := clamp(g.pid[1].output, -1, 1)
@@ -571,6 +585,33 @@ draw_normal :: proc(g: ^Game_3D) {
     rl.DrawLine3D(c, c + [3]f32{1, 0, 0}, rl.BLUE)
 }
 
+DrawPlotSimple :: proc(bounds: rl.Rectangle, name: cstring, data: []f64, setpoint: f64, pos: int) {
+    h_shift :: 1.5
+    rl.DrawRectangleRoundedLinesEx(bounds, 0.0, 0, 1, rl.BLACK);
+    rl.DrawText(name, i32(bounds.x) + 2, i32(bounds.y) + 2, 10, rl.GRAY);
+    
+    h_offset := bounds.y + bounds.height;
+    h_ratio := bounds.height / 4.0;
+
+    posval := f32(pos) * bounds.width / f32(len(data))
+    
+    pv := [2]f32{0, 0};
+    v := [2]f32{bounds.x, clamp(h_offset - h_ratio*(f32(data[0]) + h_shift), bounds.y, h_offset) };
+    for i in 0..<bounds.width {
+        idx := int(f32(i) * f32(len(data)) / bounds.width)
+        y := f32(data[idx]) + h_shift
+        pv := v
+        v = [2]f32{ bounds.x + i, clamp(h_offset - h_ratio*y, bounds.y, h_offset) };
+        rl.DrawLineEx(pv, v, 2, i < posval ? rl.RED : rl.Color {255,0,0,32});
+    }
+    
+    rl.DrawLineEx({bounds.x + posval, bounds.y}, {bounds.x + posval, bounds.y + bounds.height}, 1, rl.GREEN)
+
+    yval := clamp(h_offset - h_ratio*(f32(setpoint) + h_shift), bounds.y, h_offset)
+    rl.DrawLineEx({bounds.x, yval }, {bounds.x + bounds.width, yval}, 1, rl.BLUE)
+}
+
+
 draw_3d :: proc(g: ^Game_3D) {
     rl.BeginDrawing()
     rl.ClearBackground(rl.RAYWHITE)
@@ -599,6 +640,19 @@ draw_3d :: proc(g: ^Game_3D) {
 
     if g.slomo do rl.DrawText(fmt.caprintf("[Slomo (tm)]"), 110, HEIGHT - 20, 20, rl.GREEN)
     if g.paused do rl.DrawText(fmt.caprintf("[Paused]"), 10, HEIGHT - 20, 20, rl.GREEN)
+
+    for &d, i in g.data {
+        rr : f32 : 200
+        rec := rl.Rectangle{
+            x = WIDTH - rr - 2,
+            y = 2 + f32(i) * (rr + 4),
+            width = rr,
+            height = rr,
+        }
+
+        DrawPlotSimple(rec, fmt.caprint(Pid_Type(i)), d[:], g.pid[i].setpoint, g.data_idxs[i]);
+    }
+
 
     rl.EndDrawing()
 }
