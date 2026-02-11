@@ -51,6 +51,14 @@ MASS :: 4*(MOTOR_MASS + PROP_MASS) + BATT_MASS + ESP_MASS + CHASSIS_MASS
 PIXELS_PER_M :: 30
 MOTOR_TO_CENTER_M :: 0.06 // estimate (not real)
 
+DEFAULT_POS :: rl.Camera {
+    position = {0.0, -4.0, 25.0},
+    target = {0.0, 0.0, 0.0},
+    up = {0.0, 0.0, 1.0},
+    fovy = 90.0,
+    projection = .PERSPECTIVE,
+}
+
 Edit_Mode :: enum {
     None,
     Proportional,
@@ -111,6 +119,7 @@ Game_3D :: struct {
     paused: bool,
     view_mode: View_Mode,
     slomo: bool,
+    loop: bool,
  
 }
 
@@ -122,13 +131,9 @@ Game_Memory :: struct {
 
 g: ^Game_Memory
 
-set_game_3d_default :: proc(g: ^Game_3D) {
-    g.camera = {
-        position = {0.0, -4.0, 25.0},
-        target = {0.0, 0.0, 0.0},
-        up = {0.0, 0.0, 1.0},
-        fovy = 90.0,
-        projection = .PERSPECTIVE,
+set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
+    if hard_reset {
+        g.camera = DEFAULT_POS
     }
 
     g.particles = {
@@ -271,6 +276,16 @@ update_particles :: proc(particles: []Particle) {
     }
 }
 
+reset :: proc(g: ^Game_3D, hard: bool = false) {
+    if hard {
+        for &p in g.pid do init_pid(&p)
+    } else {
+        for &p in g.pid do reset_pid(&p)
+    }
+    set_game_3d_default(g, hard)
+
+}
+
 handle_input_3d :: proc(g: ^Game_3D) {
     if rl.IsKeyDown(.P) {
         g.edit = .Proportional
@@ -288,6 +303,10 @@ handle_input_3d :: proc(g: ^Game_3D) {
     }
     if rl.IsKeyPressed(.RIGHT_BRACKET) {
         mw += 0.1
+    }
+
+    if rl.IsKeyPressed(.M) {
+        g.loop = !g.loop
     }
 
     if rl.IsKeyPressed(.ONE) {
@@ -323,6 +342,12 @@ handle_input_3d :: proc(g: ^Game_3D) {
             p.Kd += mw
         case .None:
         }
+    }
+
+    
+
+    if rl.IsKeyPressed(.COMMA) {
+        g.camera = DEFAULT_POS
     }
 
     if rl.IsKeyPressed(.V) {
@@ -371,12 +396,8 @@ handle_input_3d :: proc(g: ^Game_3D) {
     }
 
     if rl.IsKeyPressed(.R) {
-        if rl.IsKeyDown(.LEFT_SHIFT) {
-            for &p in g.pid do init_pid(&p)
-        } else {
-            for &p in g.pid do reset_pid(&p)
-        }
-        set_game_3d_default(g)
+        hr := rl.IsKeyDown(.LEFT_SHIFT)
+        reset(g, hr)
     }
     
 }
@@ -586,7 +607,7 @@ draw_normal :: proc(g: ^Game_3D) {
 }
 
 DrawPlotSimple :: proc(bounds: rl.Rectangle, name: cstring, data: []f64, setpoint: f64, pos: int) {
-    h_shift :: 1.5
+    h_shift :: 2.0
     rl.DrawRectangleRoundedLinesEx(bounds, 0.0, 0, 1, rl.BLACK);
     rl.DrawText(name, i32(bounds.x) + 2, i32(bounds.y) + 2, 10, rl.GRAY);
     
@@ -638,6 +659,7 @@ draw_3d :: proc(g: ^Game_3D) {
     rl.DrawText(fmt.caprintf("Rot: %f", g.pid[2].setpoint * 180 / math.PI), 10, HEIGHT - 60, 20, rl.GREEN)
     rl.DrawText(fmt.caprintf("Throttle: %f", g.throttle), 10, HEIGHT - 40, 20, rl.GREEN)
 
+    if g.loop do rl.DrawText(fmt.caprintf("[Loop (tm)]"), 230, HEIGHT - 20, 20, rl.GREEN)
     if g.slomo do rl.DrawText(fmt.caprintf("[Slomo (tm)]"), 110, HEIGHT - 20, 20, rl.GREEN)
     if g.paused do rl.DrawText(fmt.caprintf("[Paused]"), 10, HEIGHT - 20, 20, rl.GREEN)
 
@@ -671,6 +693,12 @@ game_3d :: proc() {
     update_3d(&g.g3d)
     draw_3d(&g.g3d)
     handle_input_3d(&g.g3d)
+
+    if g.g3d.loop {
+        if g.g3d.data_idxs[0] == len(g.g3d.data[0]) - 1 {
+            reset(&g.g3d)
+        }
+    }
     if g.g3d.slomo {
         g.dt = 0.001
     } else {
