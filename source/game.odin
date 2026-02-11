@@ -74,7 +74,7 @@ Pid_Type :: enum {
 }
 
 View_Mode :: enum {
-    Top, Left,
+    Top, Left, Follow,
 }
 
 Particle :: struct {
@@ -99,6 +99,15 @@ PID_Controller :: struct {
     Kp: f64,
     Ki: f64,
     Kd: f64,
+
+    Ti: f64,
+    Td: f64,
+    Ku: f64,
+    Tu: f64,
+
+    data: [1000]f64,
+    data_idx: int,
+
     setpoint: f64,
     A: [3]f64,
     error: [3]f64,
@@ -110,8 +119,6 @@ Game_3D :: struct {
     particles : [4]Particle,
     camera: rl.Camera3D,
     gyro : [3]f64,
-    data: [3][1000]f64,
-    data_idxs: [3]int,
     pid : [3]PID_Controller,
     throttle : f64,
     edit: Edit_Mode,
@@ -163,8 +170,10 @@ set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
     hypot :: 2*MOTOR_TO_CENTER_M * PIXELS_PER_M
     side := hypot / math.sqrt_f64(2)
 
-    for &d in g.data do d = 0
-    for &d in g.data_idxs do d = 0
+    for &d in g.pid {
+        d.data = 0
+        d.data_idx = 0
+    }
     
     g.drone = {
         {p = 0, p1 = 1, length = side },
@@ -196,10 +205,16 @@ draw_links :: proc(g: ^Game_3D) {
     }
 }
 
-init_pid :: proc(using pid: ^PID_Controller) {
-    Kp = 0.1
-    Ki = 0.1
-    Kd = 0.1
+init_pids :: proc(g: ^Game_3D) {
+    init_pid(&g.pid[0], 0.1, 0.1, 0.1)
+    init_pid(&g.pid[1], 0.1, 0.1, 0.1)
+    init_pid(&g.pid[2], _Kp =-0.6, _Ki=0.1, _Kd=-0.4)
+}
+
+init_pid :: proc(using pid: ^PID_Controller, _Kp: f64 = 0.0, _Ki: f64 = 0.0, _Kd: f64 = 0.0) {
+    Kp = _Kp
+    Ki = _Ki
+    Kd = _Kd
     setpoint = 0.0
     A = {
         Kp + Ki*g.dt + Kd/g.dt,
@@ -213,6 +228,22 @@ init_pid :: proc(using pid: ^PID_Controller) {
 reset_pid :: proc(using pid: ^PID_Controller) {
     error = 0
     output = 0
+}
+
+autotune_pid :: proc(using pid: ^PID_Controller, input: f64) {
+    /* 1. The ratio of output level to input level at low frequencies determines the gain parameter K of the model.
+       2. Observe the frequency Fu at which the phase passes through -pi radians (-180 degrees). The inverse of this frequency is the period of the oscillation, Tu.
+       3. Observe the plant gain Kc that occurs at the critical oscillation frequency Fu. The inverse of this is the gain margin Ku.
+     */
+    Ku = 0.0; 
+    Tu = 0.0;
+    
+    Kp = (1.0/3.0) * Ku;
+    Ti = 0.5 * Tu;
+    Td = (1.0/3.0) * Tu;
+    
+    Ki = Kp / Ti;
+    Kd = Kp * Td;
 }
 
 update_pid :: proc(measured_value: f64, pid: ^PID_Controller) {
@@ -278,7 +309,7 @@ update_particles :: proc(particles: []Particle) {
 
 reset :: proc(g: ^Game_3D, hard: bool = false) {
     if hard {
-        for &p in g.pid do init_pid(&p)
+        init_pids(g)
     } else {
         for &p in g.pid do reset_pid(&p)
     }
@@ -372,8 +403,12 @@ handle_input_3d :: proc(g: ^Game_3D) {
 
     if rl.IsKeyPressed(.PERIOD) || rl.IsKeyPressed(.SLASH) {
         if rl.IsKeyPressed(.PERIOD) {
-            if g.view_mode == .Top do g.view_mode = .Left
-            else do g.view_mode = .Top
+            if rl.IsKeyDown(.LEFT_SHIFT) {
+                g.view_mode = .Follow
+            } else {
+                if g.view_mode == .Top do g.view_mode = .Left
+                else do g.view_mode = .Top
+            }
         }
 
         c := cast_f32(drone_center(g))
@@ -491,8 +526,10 @@ clamp_motor_speed :: proc(a, b: ^f64) {
 handle_pid3d :: proc(g: ^Game_3D) {
     for i in 0..<3 do update_pid(g.gyro[i], &g.pid[i])
 
-    for &d, i in g.data do d[g.data_idxs[i]] = g.gyro[i]
-    for &d, i in g.data_idxs do d = (d + 1) % len(g.data[i])
+    for &p, i in g.pid {
+        p.data[p.data_idx] = g.gyro[i]
+        p.data_idx = (p.data_idx + 1) % len(p.data)
+    }
     
     ps := &g.particles
     po := clamp(g.pid[0].output, -1, 1)
@@ -663,7 +700,7 @@ draw_3d :: proc(g: ^Game_3D) {
     if g.slomo do rl.DrawText(fmt.caprintf("[Slomo (tm)]"), 110, HEIGHT - 20, 20, rl.GREEN)
     if g.paused do rl.DrawText(fmt.caprintf("[Paused]"), 10, HEIGHT - 20, 20, rl.GREEN)
 
-    for &d, i in g.data {
+    for &p, i in g.pid {
         rr : f32 : 200
         rec := rl.Rectangle{
             x = WIDTH - rr - 2,
@@ -672,7 +709,7 @@ draw_3d :: proc(g: ^Game_3D) {
             height = rr,
         }
 
-        DrawPlotSimple(rec, fmt.caprint(Pid_Type(i)), d[:], g.pid[i].setpoint, g.data_idxs[i]);
+        DrawPlotSimple(rec, fmt.caprint(Pid_Type(i)), p.data[:], g.pid[i].setpoint, p.data_idx);
     }
 
 
@@ -680,6 +717,15 @@ draw_3d :: proc(g: ^Game_3D) {
 }
 
 update_3d :: proc(g: ^Game_3D) {
+    if (g.view_mode == .Follow) {
+        g.camera = {
+            position = cast_f32(drone_center(g)) + 10,
+            target = cast_f32(drone_center(g)),
+            up = {0.0, 0.0, 1.0},
+            fovy = 90.0,
+            projection = .PERSPECTIVE,
+        }
+    }
     rl.UpdateCamera(&g.camera, .FREE)
     if !g.paused {
         update_gyro(g)
@@ -695,7 +741,7 @@ game_3d :: proc() {
     handle_input_3d(&g.g3d)
 
     if g.g3d.loop {
-        if g.g3d.data_idxs[0] == len(g.g3d.data[0]) - 1 {
+        if g.g3d.pid[0].data_idx == len(g.g3d.pid[0].data) - 1 {
             reset(&g.g3d)
         }
     }
@@ -738,10 +784,7 @@ game_init :: proc() {
 
     set_game_3d_default(&g.g3d)
 
-    for &p in g.g3d.pid {
-        init_pid(&p)
-    }
-
+    init_pids(&g.g3d)
 	game_hot_reloaded(g)
 }
 
