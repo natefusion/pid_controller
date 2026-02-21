@@ -30,6 +30,7 @@ package game
 import "core:fmt"
 import "core:math"
 import "core:math/linalg"
+import "core:math/cmplx"
 import rl "vendor:raylib"
 
 PIXEL_WINDOW_HEIGHT :: 180
@@ -37,8 +38,17 @@ WIDTH :: 1280
 HEIGHT :: 720
 
 // DEETS
-MAX_MOTOR_RPS :: 19_000/*RPM*/ / 60.0
+MAX_MOTOR_RPS : f64 : 70_300/*RPM*/ / 60.0
+gravity :: 9.81 // m/s^2
+ω :: MAX_MOTOR_RPS*math.TAU
 
+hover_throttle :: 0.7 // estimated percent of max for hover
+C_T :: 0.08//MASS * gravity / (ρ * (hover_throttle*hover_throttle*ω*ω) * D4)
+ρ :: 1.225 // kg/m^3 (density of air)
+D :: 0.031 // m (diamter of the propeller)
+D4 :: D*D*D*D
+D5 :: D4*D
+PROP_PITCH :: 0.04826 // meter
 
 // kg
 MOTOR_MASS :: 0.00295
@@ -46,10 +56,10 @@ PROP_MASS :: 0.00019
 BATT_MASS :: 0.1
 ESP_MASS :: 0.04
 CHASSIS_MASS :: 0.2
-MASS :: 4*(MOTOR_MASS + PROP_MASS) + BATT_MASS + ESP_MASS + CHASSIS_MASS
+MASS :: 0.025//(4*(MOTOR_MASS + PROP_MASS) + BATT_MASS + ESP_MASS + CHASSIS_MASS)
 
 PIXELS_PER_M :: 30
-MOTOR_TO_CENTER_M :: 0.06 // estimate (not real)
+MOTOR_TO_CENTER_M :: 0.07 // estimate (real)
 
 DEFAULT_POS :: rl.Camera {
     position = {0.0, -4.0, 25.0},
@@ -106,6 +116,7 @@ PID_Controller :: struct {
     Tu: f64,
 
     data: [1000]f64,
+    io: [1000]complex64,
     data_idx: int,
 
     setpoint: f64,
@@ -168,7 +179,7 @@ set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
     }
 
     hypot :: 2*MOTOR_TO_CENTER_M * PIXELS_PER_M
-    side := hypot / math.sqrt_f64(2)
+    side :: hypot / math.SQRT_TWO
 
     for &d in g.pid {
         d.data = 0
@@ -184,6 +195,34 @@ set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
         {p = 1, p1 = 2, length = hypot },
     }
     g.paused = false
+}
+
+fft :: proc(x: []complex64) {
+    N := len(x)
+    if N == 1 do return
+
+    x0 := make([]complex64, N/2)
+    x1 := make([]complex64, N/2)
+    defer delete(x0)
+    defer delete(x1)
+    
+    for i := 0; 2 * i < N - 1; i+=1 {
+        x0[i] = x[2*i]
+        x1[i] = x[2*i+1]
+    }
+
+    fft(x0)
+    fft(x1)
+
+    ang := math.TAU / f64(N)
+    w := complex64(1)
+    wn := complex64(complex(math.cos(ang), math.sin(ang)))
+
+    for i := 0; 2 * i < N - 1; i+=1 {
+        x[i] = x0[i] + w * x1[i]
+        x[i + N/2] = x0[i] - w * x1[i]
+        w *= wn
+    }
 }
 
 update_link :: proc(ps: []Particle, link : Link) {
@@ -206,9 +245,9 @@ draw_links :: proc(g: ^Game_3D) {
 }
 
 init_pids :: proc(g: ^Game_3D) {
-    init_pid(&g.pid[0], 0.1, 0.1, 0.1)
-    init_pid(&g.pid[1], 0.1, 0.1, 0.1)
-    init_pid(&g.pid[2], _Kp =-0.6, _Ki=0.1, _Kd=-0.4)
+    init_pid(&g.pid[0], 0.4, 0.3, 0.1)
+    init_pid(&g.pid[1], 0.4, 0.3, 0.1)
+    init_pid(&g.pid[2], 0.3, 0.05, 0.00015)
 }
 
 init_pid :: proc(using pid: ^PID_Controller, _Kp: f64 = 0.0, _Ki: f64 = 0.0, _Kd: f64 = 0.0) {
@@ -230,13 +269,35 @@ reset_pid :: proc(using pid: ^PID_Controller) {
     output = 0
 }
 
-autotune_pid :: proc(using pid: ^PID_Controller, input: f64) {
+autotune_pid :: proc(using pid: ^PID_Controller) {
     /* 1. The ratio of output level to input level at low frequencies determines the gain parameter K of the model.
        2. Observe the frequency Fu at which the phase passes through -pi radians (-180 degrees). The inverse of this frequency is the period of the oscillation, Tu.
        3. Observe the plant gain Kc that occurs at the critical oscillation frequency Fu. The inverse of this is the gain margin Ku.
      */
-    Ku = 0.0; 
-    Tu = 0.0;
+
+    fft(io[:])
+    Ku = 1
+    Tu = 1
+    for i := 0; i < len(io)-1; i += 1 {
+        r1, θ1 := cmplx.polar(io[i])
+        r2, θ2 := cmplx.polar(io[i+1])
+
+        a := θ1 <= -math.PI && θ2 >= -math.PI
+        b := θ1 >= -math.PI && θ2 <= -math.PI
+        if a || b {
+            fs := 1/g.dt
+
+            Fu := f64(i) * fs / len(io)
+            Kc := f64(r1)
+
+            Ku = Kc == 0 ? 1 : 1.0/Kc;
+            Tu = Fu == 0 ? 1 : 1.0/Fu;
+
+            fmt.println("Found Ku and Tu!")
+            break
+        }
+        fmt.println(θ1)
+    }
     
     Kp = (1.0/3.0) * Ku;
     Ti = 0.5 * Tu;
@@ -244,6 +305,8 @@ autotune_pid :: proc(using pid: ^PID_Controller, input: f64) {
     
     Ki = Kp / Ti;
     Kd = Kp * Td;
+
+    io = 0 // fft algo is in place, so reset to allow for more data
 }
 
 update_pid :: proc(measured_value: f64, pid: ^PID_Controller) {
@@ -253,6 +316,7 @@ update_pid :: proc(measured_value: f64, pid: ^PID_Controller) {
     pid.error[2] = pid.error[1]
     pid.error[1] = pid.error[0]
     pid.error[0] = pid.setpoint - measured_value
+    pid.error = linalg.clamp(pid.error, -1, 1)
     pid.output += linalg.dot(pid.A, pid.error)
 }
 
@@ -284,9 +348,9 @@ draw_pid_stats :: proc(pid: ^PID_Controller, start_y: i32 = 10) -> (end_y: i32) 
 
 update_particle :: proc(p: ^Particle) {
     gravity :: [3]f64{0, 0, -9.81}
-    force := p.tangential_force + p.prop_force + gravity
+    force := p.tangential_force + p.prop_force
     temp := p.position
-    a := force / p.mass
+    a := force / p.mass + gravity
     x := a * g.dt * g.dt
     p.position = 2*p.position - p.position_old + x
     p.position_old = temp
@@ -439,7 +503,7 @@ handle_input_3d :: proc(g: ^Game_3D) {
 
 draw_force_vectors :: proc(g: ^Game_3D) {
     for p in g.particles {
-        end_pos := p.position - p.prop_force
+        end_pos := p.position - p.prop_force*20
         rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
 
         end_pos = p.position - p.tangential_force
@@ -474,20 +538,19 @@ calc_thrust :: proc(val: f64) -> (F_thrust: f64) {
     assert(val >= 0.0)
     assert(val <= 1.0)
     
-    C_T :: 4.0 // unitless (coefficient of thrust)
-    ρ :: 1.225 // kg/m^3 (density of air)
-    D :: 0.031 // m (diamter of the propeller)
-    D4 :: D*D*D*D
-    n := val * MAX_MOTOR_RPS*math.TAU
+    n := val * MAX_MOTOR_RPS
     F_thrust = C_T * ρ * n*n * D4
     return
 }
+
 
 calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
     assert(val >= 0.0)
     assert(val <= 1.0)
 
-    K_T :: 0.0000001 // kg*m^2 (aerodynamic drag coefficient)
+    η :: 0.6 // efficiency (0.6 - 0.8)
+    C_Q :: (D / (math.TAU * PROP_PITCH)) * η * C_T
+    K_T :: C_Q * ρ * D5 / (math.TAU * math.TAU) // kg*m^2 (aerodynamic drag coefficient)
     ω :: MAX_MOTOR_RPS*math.TAU
     MAX_TORQUE :: K_T * ω*ω
     T_m := val * MAX_TORQUE
@@ -528,45 +591,25 @@ handle_pid3d :: proc(g: ^Game_3D) {
 
     for &p, i in g.pid {
         p.data[p.data_idx] = g.gyro[i]
+        p.io[p.data_idx] = g.gyro[i] == 0 ? 0 : complex(p.output / g.gyro[i], 0)
+        if p.io[p.data_idx] != p.io[p.data_idx] do fmt.println(p.output, g.gyro[i])
+
+        // if p.data_idx == len(p.data) - 1 {
+        //     autotune_pid(&p)
+        // }
+
         p.data_idx = (p.data_idx + 1) % len(p.data)
     }
-    
+
     ps := &g.particles
     po := clamp(g.pid[0].output, -1, 1)
     ro := clamp(g.pid[1].output, -1, 1)
     yo := clamp(g.pid[2].output, -1, 1)
 
-    i1 : [2]int
-    if ro < 0 {
-        ps[0].motor_speed = g.throttle - math.abs(ro)
-        ps[3].motor_speed = g.throttle + math.abs(ro)
-        i1 = {3, 0}
-    } else {
-        i1 = {0, 3}
-        ps[0].motor_speed = g.throttle + math.abs(ro)
-        ps[3].motor_speed = g.throttle - math.abs(ro)
-    }
-
-    i2 : [2]int
-    if po < 0 {
-        i2 = {1, 2}
-        ps[1].motor_speed = g.throttle - math.abs(po)
-        ps[2].motor_speed = g.throttle + math.abs(po)
-    } else {
-        i2 = {2, 1}
-        ps[1].motor_speed = g.throttle + math.abs(po)
-        ps[2].motor_speed = g.throttle - math.abs(po)
-    }
-
-
-    if ps[i1[0]].motor_speed > ps[i2[0]].motor_speed {
-        i1, i2 = i2, i1
-    }
-    
-    ps[i1[0]].motor_speed -= ps[i1[0]].prop_spin_dir * yo
-    ps[i1[1]].motor_speed -= ps[i1[1]].prop_spin_dir * yo
-    ps[i2[0]].motor_speed -= ps[i2[0]].prop_spin_dir * yo
-    ps[i2[1]].motor_speed -= ps[i2[1]].prop_spin_dir * yo
+    ps[0].motor_speed = g.throttle + ro + ps[0].prop_spin_dir * yo
+    ps[1].motor_speed = g.throttle + po + ps[1].prop_spin_dir * yo
+    ps[2].motor_speed = g.throttle - po + ps[2].prop_spin_dir * yo
+    ps[3].motor_speed = g.throttle - ro + ps[3].prop_spin_dir * yo
 
     c := drone_center(g)
     for &p in ps {
