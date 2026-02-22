@@ -29,9 +29,11 @@ package game
 
 import "core:fmt"
 import "core:math"
+import "core:thread"
 import "core:math/linalg"
 import "core:math/cmplx"
 import rl "vendor:raylib"
+
 
 PIXEL_WINDOW_HEIGHT :: 180
 WIDTH :: 1280
@@ -43,7 +45,7 @@ gravity :: 9.81 // m/s^2
 ω :: MAX_MOTOR_RPS*math.TAU
 
 hover_throttle :: 0.7 // estimated percent of max for hover
-C_T :: 0.08//MASS * gravity / (ρ * (hover_throttle*hover_throttle*ω*ω) * D4)
+C_T :: 0.5//MASS * gravity / (ρ * (hover_throttle*hover_throttle*ω*ω) * D4)
 ρ :: 1.225 // kg/m^3 (density of air)
 D :: 0.031 // m (diamter of the propeller)
 D4 :: D*D*D*D
@@ -53,10 +55,10 @@ PROP_PITCH :: 0.04826 // meter
 // kg
 MOTOR_MASS :: 0.00295
 PROP_MASS :: 0.00019
-BATT_MASS :: 0.1
+BATT_MASS :: 0.05
 ESP_MASS :: 0.04
-CHASSIS_MASS :: 0.2
-MASS :: 0.025//(4*(MOTOR_MASS + PROP_MASS) + BATT_MASS + ESP_MASS + CHASSIS_MASS)
+CHASSIS_MASS :: 0.1
+MASS :: (4*(MOTOR_MASS + PROP_MASS) + BATT_MASS + ESP_MASS + CHASSIS_MASS)
 
 PIXELS_PER_M :: 30
 MOTOR_TO_CENTER_M :: 0.07 // estimate (real)
@@ -105,18 +107,20 @@ Link :: struct {
 
 Super_Particle :: [6]Link
 
+Recording_Size :: 1000
+
 PID_Controller :: struct {
     Kp: f64,
     Ki: f64,
     Kd: f64,
 
-    Ti: f64,
-    Td: f64,
-    Ku: f64,
-    Tu: f64,
+    // Ti: f64,
+    // Td: f64,
+    // Ku: f64,
+    // Tu: f64,
 
-    data: [1000]f64,
-    io: [1000]complex64,
+    data: [Recording_Size]f64,
+    // io: [Recording_Size]complex64,
     data_idx: int,
 
     setpoint: f64,
@@ -138,13 +142,15 @@ Game_3D :: struct {
     view_mode: View_Mode,
     slomo: bool,
     loop: bool,
- 
+    dt: f64,
+    trajectory: [Recording_Size]f64,
+    trajectory_idx: int,
 }
 
 Game_Memory :: struct {
 	run: bool,
     g3d : Game_3D,
-    dt: f64,
+    running_thread: bool,
 }
 
 g: ^Game_Memory
@@ -153,6 +159,8 @@ set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
     if hard_reset {
         g.camera = DEFAULT_POS
     }
+
+    g.dt = 0.001
 
     g.particles = {
         { // front right
@@ -197,33 +205,33 @@ set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
     g.paused = false
 }
 
-fft :: proc(x: []complex64) {
-    N := len(x)
-    if N == 1 do return
+// fft :: proc(x: []complex64) {
+//     N := len(x)
+//     if N == 1 do return
 
-    x0 := make([]complex64, N/2)
-    x1 := make([]complex64, N/2)
-    defer delete(x0)
-    defer delete(x1)
+//     x0 := make([]complex64, N/2)
+//     x1 := make([]complex64, N/2)
+//     defer delete(x0)
+//     defer delete(x1)
     
-    for i := 0; 2 * i < N - 1; i+=1 {
-        x0[i] = x[2*i]
-        x1[i] = x[2*i+1]
-    }
+//     for i := 0; 2 * i < N - 1; i+=1 {
+//         x0[i] = x[2*i]
+//         x1[i] = x[2*i+1]
+//     }
 
-    fft(x0)
-    fft(x1)
+//     fft(x0)
+//     fft(x1)
 
-    ang := math.TAU / f64(N)
-    w := complex64(1)
-    wn := complex64(complex(math.cos(ang), math.sin(ang)))
+//     ang := math.TAU / f64(N)
+//     w := complex64(1)
+//     wn := complex64(complex(math.cos(ang), math.sin(ang)))
 
-    for i := 0; 2 * i < N - 1; i+=1 {
-        x[i] = x0[i] + w * x1[i]
-        x[i + N/2] = x0[i] - w * x1[i]
-        w *= wn
-    }
-}
+//     for i := 0; 2 * i < N - 1; i+=1 {
+//         x[i] = x0[i] + w * x1[i]
+//         x[i + N/2] = x0[i] - w * x1[i]
+//         w *= wn
+//     }
+// }
 
 update_link :: proc(ps: []Particle, link : Link) {
     p_pos := &ps[link.p].position
@@ -245,20 +253,20 @@ draw_links :: proc(g: ^Game_3D) {
 }
 
 init_pids :: proc(g: ^Game_3D) {
-    init_pid(&g.pid[0], 0.4, 0.3, 0.1)
-    init_pid(&g.pid[1], 0.4, 0.3, 0.1)
-    init_pid(&g.pid[2], 0.3, 0.05, 0.00015)
+    init_pid(&g.pid[0], 0.4, 0.3, 0.1, g.dt)
+    init_pid(&g.pid[1], 0.4, 0.3, 0.1, g.dt)
+    init_pid(&g.pid[2], 0.7, 0.09, 0.0003, g.dt)
 }
 
-init_pid :: proc(using pid: ^PID_Controller, _Kp: f64 = 0.0, _Ki: f64 = 0.0, _Kd: f64 = 0.0) {
+init_pid :: proc(using pid: ^PID_Controller, _Kp: f64 = 0.0, _Ki: f64 = 0.0, _Kd: f64 = 0.0, dt: f64 = 0.01) {
     Kp = _Kp
     Ki = _Ki
     Kd = _Kd
     setpoint = 0.0
     A = {
-        Kp + Ki*g.dt + Kd/g.dt,
-        -Kp - 2*Kd/g.dt,
-        Kd/g.dt,
+        Kp + Ki*dt + Kd/dt,
+        -Kp - 2*Kd/dt,
+        Kd/dt,
     }
     error = 0
     output = 0
@@ -269,50 +277,50 @@ reset_pid :: proc(using pid: ^PID_Controller) {
     output = 0
 }
 
-autotune_pid :: proc(using pid: ^PID_Controller) {
-    /* 1. The ratio of output level to input level at low frequencies determines the gain parameter K of the model.
-       2. Observe the frequency Fu at which the phase passes through -pi radians (-180 degrees). The inverse of this frequency is the period of the oscillation, Tu.
-       3. Observe the plant gain Kc that occurs at the critical oscillation frequency Fu. The inverse of this is the gain margin Ku.
-     */
+// autotune_pid :: proc(using pid: ^PID_Controller, dt: f64) {
+//     /* 1. The ratio of output level to input level at low frequencies determines the gain parameter K of the model.
+//        2. Observe the frequency Fu at which the phase passes through -pi radians (-180 degrees). The inverse of this frequency is the period of the oscillation, Tu.
+//        3. Observe the plant gain Kc that occurs at the critical oscillation frequency Fu. The inverse of this is the gain margin Ku.
+//      */
 
-    fft(io[:])
-    Ku = 1
-    Tu = 1
-    for i := 0; i < len(io)-1; i += 1 {
-        r1, θ1 := cmplx.polar(io[i])
-        r2, θ2 := cmplx.polar(io[i+1])
+//     fft(io[:])
+//     Ku = 1
+//     Tu = 1
+//     for i := 0; i < len(io)-1; i += 1 {
+//         r1, θ1 := cmplx.polar(io[i])
+//         r2, θ2 := cmplx.polar(io[i+1])
 
-        a := θ1 <= -math.PI && θ2 >= -math.PI
-        b := θ1 >= -math.PI && θ2 <= -math.PI
-        if a || b {
-            fs := 1/g.dt
+//         a := θ1 <= -math.PI && θ2 >= -math.PI
+//         b := θ1 >= -math.PI && θ2 <= -math.PI
+//         if a || b {
+//             fs := 1/dt
 
-            Fu := f64(i) * fs / len(io)
-            Kc := f64(r1)
+//             Fu := f64(i) * fs / len(io)
+//             Kc := f64(r1)
 
-            Ku = Kc == 0 ? 1 : 1.0/Kc;
-            Tu = Fu == 0 ? 1 : 1.0/Fu;
+//             Ku = Kc == 0 ? 1 : 1.0/Kc;
+//             Tu = Fu == 0 ? 1 : 1.0/Fu;
 
-            fmt.println("Found Ku and Tu!")
-            break
-        }
-        fmt.println(θ1)
-    }
+//             fmt.println("Found Ku and Tu!")
+//             break
+//         }
+//         fmt.println(θ1)
+//     }
     
-    Kp = (1.0/3.0) * Ku;
-    Ti = 0.5 * Tu;
-    Td = (1.0/3.0) * Tu;
+//     Kp = (1.0/3.0) * Ku;
+//     Ti = 0.5 * Tu;
+//     Td = (1.0/3.0) * Tu;
     
-    Ki = Kp / Ti;
-    Kd = Kp * Td;
+//     Ki = Kp / Ti;
+//     Kd = Kp * Td;
 
-    io = 0 // fft algo is in place, so reset to allow for more data
-}
+//     io = 0 // fft algo is in place, so reset to allow for more data
+// }
 
-update_pid :: proc(measured_value: f64, pid: ^PID_Controller) {
-    pid.A[0] = pid.Kp + pid.Ki*g.dt + pid.Kd/g.dt
-    pid.A[1] = -pid.Kp - 2*pid.Kd/g.dt
-    pid.A[2] = pid.Kd / g.dt
+update_pid :: proc(measured_value: f64, pid: ^PID_Controller, dt: f64) {
+    pid.A[0] = pid.Kp + pid.Ki*dt + pid.Kd/dt
+    pid.A[1] = -pid.Kp - 2*pid.Kd/dt
+    pid.A[2] = pid.Kd / dt
     pid.error[2] = pid.error[1]
     pid.error[1] = pid.error[0]
     pid.error[0] = pid.setpoint - measured_value
@@ -346,12 +354,12 @@ draw_pid_stats :: proc(pid: ^PID_Controller, start_y: i32 = 10) -> (end_y: i32) 
     return
 }
 
-update_particle :: proc(p: ^Particle) {
+update_particle :: proc(p: ^Particle, dt: f64) {
     gravity :: [3]f64{0, 0, -9.81}
     force := p.tangential_force + p.prop_force
     temp := p.position
     a := force / p.mass + gravity
-    x := a * g.dt * g.dt
+    x := a * dt * dt
     p.position = 2*p.position - p.position_old + x
     p.position_old = temp
     
@@ -364,9 +372,9 @@ handle_ground_collision_3d :: proc(p: ^Particle) {
     }
 }
 
-update_particles :: proc(particles: []Particle) {
+update_particles :: proc(particles: []Particle, dt: f64) {
     for &p in particles {
-        update_particle(&p)
+        update_particle(&p, dt)
         handle_ground_collision_3d(&p)
     }
 }
@@ -381,15 +389,15 @@ reset :: proc(g: ^Game_3D, hard: bool = false) {
 
 }
 
-handle_input_3d :: proc(g: ^Game_3D) {
+handle_input_3d :: proc(game: ^Game_3D) {
     if rl.IsKeyDown(.P) {
-        g.edit = .Proportional
+        game.edit = .Proportional
     } else if rl.IsKeyDown(.I) {
-        g.edit = .Integral
+        game.edit = .Integral
     } else if rl.IsKeyDown(.F) {
-        g.edit = .Derivative
+        game.edit = .Derivative
     } else if rl.IsKeyDown(.N) {
-        g.edit = .None
+        game.edit = .None
     }
 
     mw : f64 = 0
@@ -401,22 +409,22 @@ handle_input_3d :: proc(g: ^Game_3D) {
     }
 
     if rl.IsKeyPressed(.M) {
-        g.loop = !g.loop
+        game.loop = !game.loop
     }
 
     if rl.IsKeyPressed(.ONE) {
-        g.selected_pid = .Pitch
+        game.selected_pid = .Pitch
     } else if rl.IsKeyPressed(.TWO) {
-        g.selected_pid = .Roll
+        game.selected_pid = .Roll
     } else if rl.IsKeyPressed(.THREE) {
-        g.selected_pid = .Yaw
+        game.selected_pid = .Yaw
     } else if rl.IsKeyPressed(.ZERO) {
-        g.selected_pid = .None
+        game.selected_pid = .None
     }
 
-    if g.selected_pid == .None {
-        for &p in g.pid {
-            switch g.edit {
+    if game.selected_pid == .None {
+        for &p in game.pid {
+            switch game.edit {
             case .Proportional:
                 p.Kp += mw
             case .Integral:
@@ -427,8 +435,8 @@ handle_input_3d :: proc(g: ^Game_3D) {
             }
         }
     } else {
-        p := &g.pid[g.selected_pid]
-        switch g.edit {
+        p := &game.pid[game.selected_pid]
+        switch game.edit {
         case .Proportional:
             p.Kp += mw
         case .Integral:
@@ -442,45 +450,45 @@ handle_input_3d :: proc(g: ^Game_3D) {
     
 
     if rl.IsKeyPressed(.COMMA) {
-        g.camera = DEFAULT_POS
+        game.camera = DEFAULT_POS
     }
 
     if rl.IsKeyPressed(.V) {
-        g.slomo = !g.slomo
+        game.slomo = !game.slomo
     }
 
     if rl.IsKeyPressed(.EQUAL) {
-        g.throttle += 0.1
-        g.throttle = clamp(g.throttle, 0, 1);
+        game.throttle += 0.1
+        game.throttle = clamp(game.throttle, 0, 1);
     } else if rl.IsKeyPressed(.MINUS) {
-        g.throttle -= 0.1
-        g.throttle = clamp(g.throttle, 0, 1);
+        game.throttle -= 0.1
+        game.throttle = clamp(game.throttle, 0, 1);
     }
 
     if rl.IsKeyPressed(.SEMICOLON) {
-        g.pid[2].setpoint += 0.1 * math.PI
-        g.pid[2].setpoint = clamp(g.pid[2].setpoint, -math.PI, math.PI);
+        game.pid[2].setpoint += 0.1 * math.PI
+        game.pid[2].setpoint = clamp(game.pid[2].setpoint, -math.PI, math.PI);
     } else if rl.IsKeyPressed(.APOSTROPHE) {
-        g.pid[2].setpoint -= 0.1 * math.PI
-        g.pid[2].setpoint = clamp(g.pid[2].setpoint, -math.PI, math.PI);
+        game.pid[2].setpoint -= 0.1 * math.PI
+        game.pid[2].setpoint = clamp(game.pid[2].setpoint, -math.PI, math.PI);
     }
 
     if rl.IsKeyPressed(.PERIOD) || rl.IsKeyPressed(.SLASH) {
         if rl.IsKeyPressed(.PERIOD) {
             if rl.IsKeyDown(.LEFT_SHIFT) {
-                g.view_mode = .Follow
+                game.view_mode = .Follow
             } else {
-                if g.view_mode == .Top do g.view_mode = .Left
-                else do g.view_mode = .Top
+                if game.view_mode == .Top do game.view_mode = .Left
+                else do game.view_mode = .Top
             }
         }
 
-        c := cast_f32(drone_center(g))
-        s := cast_f32(drone_side(g))
+        c := cast_f32(drone_center(game))
+        s := cast_f32(drone_side(game))
         // raylib quirk; target and position x,y cannot match exactly!!
-        p := g.view_mode == .Top ? c + {0.0001, 0.0001, 3} : s + {3, 0.001, 0.0001}
-        t := g.view_mode == .Top ? c : s
-        g.camera = {
+        p := game.view_mode == .Top ? c + {0.0001, 0.0001, 3} : s + {3, 0.001, 0.0001}
+        t := game.view_mode == .Top ? c : s
+        game.camera = {
             position = p,
             target = t,
             up = {0.0, 0.0, 1.0},
@@ -491,12 +499,16 @@ handle_input_3d :: proc(g: ^Game_3D) {
     }
     
     if rl.IsKeyPressed(.L) {
-        g.paused = !g.paused
+        game.paused = !game.paused
     }
 
     if rl.IsKeyPressed(.R) {
         hr := rl.IsKeyDown(.LEFT_SHIFT)
-        reset(g, hr)
+        reset(game, hr)
+    }
+
+    if rl.IsKeyPressed(.J) {
+        if !g.running_thread do thread.run(show_future_events_thread)
     }
     
 }
@@ -587,12 +599,12 @@ clamp_motor_speed :: proc(a, b: ^f64) {
 }
 
 handle_pid3d :: proc(g: ^Game_3D) {
-    for i in 0..<3 do update_pid(g.gyro[i], &g.pid[i])
+    for i in 0..<3 do update_pid(g.gyro[i], &g.pid[i], g.dt)
 
     for &p, i in g.pid {
         p.data[p.data_idx] = g.gyro[i]
-        p.io[p.data_idx] = g.gyro[i] == 0 ? 0 : complex(p.output / g.gyro[i], 0)
-        if p.io[p.data_idx] != p.io[p.data_idx] do fmt.println(p.output, g.gyro[i])
+        // p.io[p.data_idx] = g.gyro[i] == 0 ? 0 : complex(p.output / g.gyro[i], 0)
+        // if p.io[p.data_idx] != p.io[p.data_idx] do fmt.println(p.output, g.gyro[i])
 
         // if p.data_idx == len(p.data) - 1 {
         //     autotune_pid(&p)
@@ -760,44 +772,74 @@ draw_3d :: proc(g: ^Game_3D) {
 }
 
 update_3d :: proc(g: ^Game_3D) {
-    if (g.view_mode == .Follow) {
-        g.camera = {
-            position = cast_f32(drone_center(g)) + 10,
-            target = cast_f32(drone_center(g)),
+    update_gyro(g)
+    handle_pid3d(g)
+    update_particles(g.particles[:], g.dt)
+    for link in g.drone do update_link(g.particles[:], link)
+}
+
+game_3d :: proc(game: ^Game_3D) {
+    if !game.paused {
+        update_3d(game)
+    }
+
+    if (game.view_mode == .Follow) {
+        game.camera = {
+            position = cast_f32(drone_center(game)) + 10,
+            target = cast_f32(drone_center(game)),
             up = {0.0, 0.0, 1.0},
             fovy = 90.0,
             projection = .PERSPECTIVE,
         }
     }
-    rl.UpdateCamera(&g.camera, .FREE)
-    if !g.paused {
-        update_gyro(g)
-        handle_pid3d(g)
-        update_particles(g.particles[:])
-        for link in g.drone do update_link(g.particles[:], link)
+    rl.UpdateCamera(&game.camera, .FREE)
+    
+    draw_3d(game)
+    handle_input_3d(game)
+    
+    if game.loop {
+        if game.pid[0].data_idx == len(game.pid[0].data) - 1 {
+            reset(game)
+        }
+    }
+    if game.slomo {
+        game.dt = 0.001
+    } else {
+        game.dt = f64(rl.GetFrameTime())
     }
 }
 
-game_3d :: proc() {
-    update_3d(&g.g3d)
-    draw_3d(&g.g3d)
-    handle_input_3d(&g.g3d)
-
-    if g.g3d.loop {
-        if g.g3d.pid[0].data_idx == len(g.g3d.pid[0].data) - 1 {
-            reset(&g.g3d)
-        }
+show_future_events_thread :: proc() {
+    g.running_thread = true
+    defer g.running_thread = false
+    
+    fmt.println("Starting Thread!")
+    defer fmt.println("Just finished the thread... ")
+    
+    new_game := new_clone(g.g3d)
+    defer free(new_game)
+    
+    for _ in 0..<Recording_Size {
+        update_3d(new_game)
+        thread.yield()
     }
-    if g.g3d.slomo {
-        g.dt = 0.001
-    } else {
-        g.dt = f64(rl.GetFrameTime())
+
+    is_paused := g.g3d.paused
+    defer g.g3d.paused = is_paused
+    
+    if !is_paused do g.g3d.paused = true // does this even do what I think it does?
+
+    g.g3d.trajectory = new_game.trajectory
+    g.g3d.trajectory_idx = new_game.trajectory_idx
+    for &p, i in g.g3d.pid {
+        p.data = new_game.pid[i].data
+        p.data_idx = new_game.pid[i].data_idx
     }
 }
 
 @(export)
 game_update :: proc() {
-    game_3d()
+    game_3d(&g.g3d)
 
 	// Everything on tracking allocator is valid until end-of-frame.
 	free_all(context.temp_allocator)
@@ -822,7 +864,7 @@ game_init :: proc() {
     bpos := [3]f64{150, 120, 0}
 	g^ = Game_Memory {
 		run = true,
-        dt = 0.001,
+        running_thread = false,
 	}
 
     set_game_3d_default(&g.g3d)
