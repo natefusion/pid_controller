@@ -765,8 +765,17 @@ DrawPlotSimple :: proc(bounds: rl.Rectangle, name: cstring, data: []f64, setpoin
 
 
 draw_3d :: proc(g: ^Game_3D) {
-    // rl.BeginDrawing()
-    // rl.ClearBackground(rl.RAYWHITE)
+    if (g.view_mode == .Follow) {
+        g.camera = {
+            position = cast_f32(drone_center(g)) + 10,
+            target = cast_f32(drone_center(g)),
+            up = {0.0, 0.0, 1.0},
+            fovy = 90.0,
+            projection = .PERSPECTIVE,
+        }
+    }
+    rl.UpdateCamera(&g.camera, .FREE)
+
     rl.BeginMode3D(g.camera)
     draw_drone(g)
     rl.DrawGrid(10, 2.0)
@@ -805,9 +814,6 @@ draw_3d :: proc(g: ^Game_3D) {
 
         DrawPlotSimple(rec, fmt.caprint(Pid_Type(i)), p.data[:], g.pid[i].setpoint, p.data_idx)
     }
-
-
-    // rl.EndDrawing()
 }
 
 update_3d :: proc(g: ^Game_3D) {
@@ -942,17 +948,6 @@ render :: proc (game: ^Game_3D, ctx: ^mu.Context) {
 		}
 	}
 	rl.EndTextureMode()
-
-    if (game.view_mode == .Follow) {
-        game.camera = {
-            position = cast_f32(drone_center(game)) + 10,
-            target = cast_f32(drone_center(game)),
-            up = {0.0, 0.0, 1.0},
-            fovy = 90.0,
-            projection = .PERSPECTIVE,
-        }
-    }
-    rl.UpdateCamera(&game.camera, .FREE)
 
 	rl.BeginDrawing()
 	rl.ClearBackground(rl.RAYWHITE)
