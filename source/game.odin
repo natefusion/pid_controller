@@ -183,8 +183,10 @@ Game_3D :: struct {
     slomo: bool,
     loop: bool,
     dt: f64,
-    trajectory: [Recording_Size]f64,
+    trajectory: [Recording_Size][3]f64,
     trajectory_idx: int,
+    view_yaw : f64,
+    view_pitch : f64,
 }
 
 Game_Memory :: struct {
@@ -244,6 +246,10 @@ set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
         {p = 1, p1 = 2, length = hypot },
     }
     g.paused = false
+
+    g.trajectory = 0
+    g.trajectory_idx = 0
+    g.view_mode = .Follow
 }
 
 // fft :: proc(x: []complex64) {
@@ -431,114 +437,6 @@ reset :: proc(g: ^Game_3D, hard: bool = false) {
 }
 
 handle_input_3d :: proc(game: ^Game_3D) {
-    if rl.IsKeyDown(.P) {
-        game.edit = .Proportional
-    } else if rl.IsKeyDown(.I) {
-        game.edit = .Integral
-    } else if rl.IsKeyDown(.F) {
-        game.edit = .Derivative
-    } else if rl.IsKeyDown(.N) {
-        game.edit = .None
-    }
-
-    mw : f64 = 0
-    if rl.IsKeyPressed(.LEFT_BRACKET) {
-        mw -= 0.1
-    }
-    if rl.IsKeyPressed(.RIGHT_BRACKET) {
-        mw += 0.1
-    }
-
-    if rl.IsKeyPressed(.M) {
-        game.loop = !game.loop
-    }
-
-    if rl.IsKeyPressed(.ONE) {
-        game.selected_pid = .Pitch
-    } else if rl.IsKeyPressed(.TWO) {
-        game.selected_pid = .Roll
-    } else if rl.IsKeyPressed(.THREE) {
-        game.selected_pid = .Yaw
-    } else if rl.IsKeyPressed(.ZERO) {
-        game.selected_pid = .None
-    }
-
-    if game.selected_pid == .None {
-        for &p in game.pid {
-            switch game.edit {
-            case .Proportional:
-                p.Kp += mw
-            case .Integral:
-                p.Ki += mw
-            case .Derivative:
-                p.Kd += mw
-            case .None:
-            }
-        }
-    } else {
-        p := &game.pid[game.selected_pid]
-        switch game.edit {
-        case .Proportional:
-            p.Kp += mw
-        case .Integral:
-            p.Ki += mw
-        case .Derivative:
-            p.Kd += mw
-        case .None:
-        }
-    }
-
-    
-
-    if rl.IsKeyPressed(.COMMA) {
-        game.camera = DEFAULT_POS
-    }
-
-    if rl.IsKeyPressed(.V) {
-        game.slomo = !game.slomo
-    }
-
-    if rl.IsKeyPressed(.EQUAL) {
-        game.throttle += 0.1
-        game.throttle = clamp(game.throttle, 0, 1)
-    } else if rl.IsKeyPressed(.MINUS) {
-        game.throttle -= 0.1
-        game.throttle = clamp(game.throttle, 0, 1)
-    }
-
-    if rl.IsKeyPressed(.SEMICOLON) {
-        game.pid[2].setpoint += 0.1 * math.PI
-        game.pid[2].setpoint = clamp(game.pid[2].setpoint, -math.PI, math.PI)
-    } else if rl.IsKeyPressed(.APOSTROPHE) {
-        game.pid[2].setpoint -= 0.1 * math.PI
-        game.pid[2].setpoint = clamp(game.pid[2].setpoint, -math.PI, math.PI)
-    }
-
-    if rl.IsKeyPressed(.PERIOD) || rl.IsKeyPressed(.SLASH) {
-        if rl.IsKeyPressed(.PERIOD) {
-            if rl.IsKeyDown(.LEFT_SHIFT) {
-                game.view_mode = .Follow
-            } else {
-                if game.view_mode == .Top do game.view_mode = .Left
-                else do game.view_mode = .Top
-            }
-        }
-
-        c := cast_f32(drone_center(game))
-        s := cast_f32(drone_side(game))
-        // raylib quirk target and position x,y cannot match exactly!!
-        p := game.view_mode == .Top ? c + {0.0001, 0.0001, 3} : s + {3, 0.001, 0.0001}
-        t := game.view_mode == .Top ? c : s
-        game.camera = {
-            position = p,
-            target = t,
-            up = {0.0, 0.0, 1.0},
-            fovy = 90.0,
-            projection = .PERSPECTIVE,
-        }
-
-    }
-    
     if rl.IsKeyPressed(.L) {
         game.paused = !game.paused
     }
@@ -547,11 +445,6 @@ handle_input_3d :: proc(game: ^Game_3D) {
         hr := rl.IsKeyDown(.LEFT_SHIFT)
         reset(game, hr)
     }
-
-    if rl.IsKeyPressed(.J) {
-        if !g.running_thread do thread.run(show_future_events_thread)
-    }
-    
 }
 
 draw_force_vectors :: proc(g: ^Game_3D) {
@@ -612,7 +505,6 @@ calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
 
 handle_pid3d :: proc(g: ^Game_3D) {
     for i in 0..<3 do update_pid(g.gyro[i], &g.pid[i], g.dt)
-
     for &p, i in g.pid {
         p.data[p.data_idx] = g.gyro[i]
         // p.io[p.data_idx] = g.gyro[i] == 0 ? 0 : complex(p.output / g.gyro[i], 0)
@@ -658,6 +550,21 @@ draw_drone :: proc(g: ^Game_3D) {
             rl.DrawCube({cast(f32)p.position.x, cast(f32)p.position.y, cast(f32)p.position.z},
                         cast(f32)radius*2, cast(f32)radius*2, cast(f32)radius*2, colors[i])
         }
+    }
+}
+
+draw_trajectory :: proc(g: ^Game_3D) {
+    traj := g.trajectory[:]
+    if len(traj) == 0 do return
+
+    N :: 50
+    v := cast_f32(traj[0])
+    for i in 1..<N {
+        idx := i * len(traj) / N
+        if idx >= len(traj) do return
+        pv := v
+        v = cast_f32(traj[idx])
+        rl.DrawLine3D(pv, v, rl.PINK)
     }
 }
 
@@ -746,7 +653,9 @@ draw_3d :: proc(g: ^Game_3D) {
             projection = .PERSPECTIVE,
         }
     }
-    rl.UpdateCamera(&g.camera, .FREE)
+    rl.CameraYaw(&g.camera, f32(g.view_yaw), true)
+    rl.CameraPitch(&g.camera, f32(g.view_pitch), true, true, true)
+    rl.UpdateCamera(&g.camera, .CUSTOM)
 
     rl.BeginMode3D(g.camera)
     draw_drone(g)
@@ -754,22 +663,23 @@ draw_3d :: proc(g: ^Game_3D) {
     draw_normal(g)
     draw_links(g)
     draw_force_vectors(g)
+    draw_trajectory(g)
     rl.EndMode3D()
 
-    draw_gyro(g.gyro)
-    end_y : i32 = 100
-    end_y = draw_pid_stats(&g.pid[0], end_y)
-    end_y = draw_pid_stats(&g.pid[1], end_y)
-    end_y = draw_pid_stats(&g.pid[2], end_y)
-    rl.DrawText(fmt.caprintf("edit  mode: %v", g.edit), 10, end_y, 20, rl.GREEN)
-    rl.DrawText(fmt.caprintf("selected pid: %v", g.selected_pid), 10, end_y+20, 20, rl.GREEN)
-    rl.DrawText(fmt.caprintf("Pos %.3f\n", drone_center(g)), 10, end_y+40, 20, rl.GREEN)
-    for p, i in g.particles {
-        rl.DrawText(fmt.caprintf("Motor speed %v: %.3f\n", i, p.motor_speed), 10, end_y+i32(20*(3+i)), 20, rl.GREEN)
-    }
+    // draw_gyro(g.gyro)
+    // end_y : i32 = 100
+    // end_y = draw_pid_stats(&g.pid[0], end_y)
+    // end_y = draw_pid_stats(&g.pid[1], end_y)
+    // end_y = draw_pid_stats(&g.pid[2], end_y)
+    // rl.DrawText(fmt.caprintf("edit  mode: %v", g.edit), 10, end_y, 20, rl.GREEN)
+    // rl.DrawText(fmt.caprintf("selected pid: %v", g.selected_pid), 10, end_y+20, 20, rl.GREEN)
+    // rl.DrawText(fmt.caprintf("Pos %.3f\n", drone_center(g)), 10, end_y+40, 20, rl.GREEN)
+    // for p, i in g.particles {
+    //     rl.DrawText(fmt.caprintf("Motor speed %v: %.3f\n", i, p.motor_speed), 10, end_y+i32(20*(3+i)), 20, rl.GREEN)
+    // }
 
-    rl.DrawText(fmt.caprintf("Rot: %f", g.pid[2].setpoint * 180 / math.PI), 10, HEIGHT - 60, 20, rl.GREEN)
-    rl.DrawText(fmt.caprintf("Throttle: %f", g.throttle), 10, HEIGHT - 40, 20, rl.GREEN)
+    // rl.DrawText(fmt.caprintf("Rot: %f", g.pid[2].setpoint * 180 / math.PI), 10, HEIGHT - 60, 20, rl.GREEN)
+    // rl.DrawText(fmt.caprintf("Throttle: %f", g.throttle), 10, HEIGHT - 40, 20, rl.GREEN)
 
     if g.loop do rl.DrawText(fmt.caprintf("[Loop (tm)]"), 230, HEIGHT - 20, 20, rl.GREEN)
     if g.slomo do rl.DrawText(fmt.caprintf("[Slomo (tm)]"), 110, HEIGHT - 20, 20, rl.GREEN)
@@ -791,11 +701,17 @@ draw_3d :: proc(g: ^Game_3D) {
 update_3d :: proc(g: ^Game_3D) {
     update_gyro(g)
     handle_pid3d(g)
+
+    g.trajectory[g.trajectory_idx] = drone_center(g)
+    g.trajectory_idx += 1
+    g.trajectory_idx %= len(g.trajectory)
+    
+
     update_particles(g.particles[:], g.dt)
     for link in g.drone do update_link(g.particles[:], link)
 }
 
-micro_ui_stuff :: proc() {
+micro_ui_stuff :: proc(game: ^Game_3D) {
     ctx := &g.state.mu_ctx
     mouse_pos := rl.GetMousePosition()
 	mouse_x, mouse_y := i32(mouse_pos.x), i32(mouse_pos.y)
@@ -841,7 +757,7 @@ micro_ui_stuff :: proc() {
 	}
 
 	mu.begin(ctx)
-	all_windows(ctx)
+	all_windows(game, ctx)
 	mu.end(ctx)
 }
 
@@ -850,7 +766,7 @@ game_3d :: proc(game: ^Game_3D) {
         update_3d(game)
     }
 
-    micro_ui_stuff()
+    micro_ui_stuff(game)
 
     // more micro ui stuff
     render(game, &g.state.mu_ctx)    // draw_3d(game)
@@ -955,7 +871,7 @@ show_future_events_thread :: proc() {
     if !is_paused do g.g3d.paused = true // does this even do what I think it does?
 
     g.g3d.trajectory = new_game.trajectory
-    g.g3d.trajectory_idx = new_game.trajectory_idx
+    // g.g3d.trajectory_idx = new_game.trajectory_idx
     for &p, i in g.g3d.pid {
         p.data = new_game.pid[i].data
         p.data_idx = new_game.pid[i].data_idx
@@ -1124,159 +1040,139 @@ u8_slider :: proc(ctx: ^mu.Context, val: ^u8, lo, hi: u8) -> (res: mu.Result_Set
 	return
 }
 
-all_windows :: proc(ctx: ^mu.Context) {
+zero_one_slider :: proc(ctx: ^mu.Context, val: ^f64, lo: f64 = 0.0, hi: f64 = 1.0, future: bool = true) -> (res: mu.Result_Set) {
+	mu.push_id(ctx, uintptr(val))
+
+	@static tmp: mu.Real
+
+	tmp = mu.Real(val^)
+	res = mu.slider(ctx, &tmp, mu.Real(lo), mu.Real(hi), 0, "%.3f", {.ALIGN_CENTER})
+    
+    if future && mu.Result.CHANGE in res {
+        if !g.running_thread do thread.run(show_future_events_thread)
+    }
+    
+	val^ = f64(tmp)
+	mu.pop_id(ctx)
+	return
+}
+
+all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 	@static opts := mu.Options{.NO_CLOSE}
 
-	if mu.window(ctx, "Demo Window", {40, 40, 300, 450}, opts) {
-		if .ACTIVE in mu.header(ctx, "Window Info") {
-			win := mu.get_current_container(ctx)
-			mu.layout_row(ctx, {54, -1}, 0)
-			mu.label(ctx, "Position:")
-			mu.label(ctx, fmt.tprintf("%d, %d", win.rect.x, win.rect.y))
-			mu.label(ctx, "Size:")
-			mu.label(ctx, fmt.tprintf("%d, %d", win.rect.w, win.rect.h))
-		}
+	if mu.window(ctx, "Stats", {40, 40, 300, 450}, opts) {
+        if .ACTIVE in mu.header(ctx, "Drone", {.EXPANDED}) {
+            mu.layout_row(ctx, {-1}, 20)
+            gyro_deg := game.gyro * 180 / math.PI
+            mu.label(ctx, fmt.tprintf("Pitch: %.3f", gyro_deg[0]))
+            mu.label(ctx, fmt.tprintf("Roll : %.3f", gyro_deg[1]))
+            mu.label(ctx, fmt.tprintf("Yaw  : %.3f", gyro_deg[2]))
 
-		if .ACTIVE in mu.header(ctx, "Window Options") {
-			mu.layout_row(ctx, {120, 120, 120}, 0)
-			for opt in mu.Opt {
-				state := opt in opts
-				if .CHANGE in mu.checkbox(ctx, fmt.tprintf("%v", opt), &state)  {
-					if state {
-						opts += {opt}
-					} else {
-						opts -= {opt}
-					}
-				}
-			}
-		}
+            mu.label(ctx, fmt.tprintf("Position: %.3f", drone_center(game)))
 
-		if .ACTIVE in mu.header(ctx, "Test Buttons", {.EXPANDED}) {
-			mu.layout_row(ctx, {86, -110, -1})
-			mu.label(ctx, "Test buttons 1:")
-			if .SUBMIT in mu.button(ctx, "Button 1") { write_log("Pressed button 1") }
-			if .SUBMIT in mu.button(ctx, "Button 2") { write_log("Pressed button 2") }
-			mu.label(ctx, "Test buttons 2:")
-			if .SUBMIT in mu.button(ctx, "Button 3") { write_log("Pressed button 3") }
-			if .SUBMIT in mu.button(ctx, "Button 4") { write_log("Pressed button 4") }
-		}
+            mu.label(ctx, fmt.tprintf("Motor Speed 1: %.3f", game.particles[0].motor_speed))
+            mu.label(ctx, fmt.tprintf("Motor Speed 2: %.3f", game.particles[1].motor_speed))
+            mu.label(ctx, fmt.tprintf("Motor Speed 3: %.3f", game.particles[2].motor_speed))
+            mu.label(ctx, fmt.tprintf("Motor Speed 4: %.3f", game.particles[3].motor_speed))
 
-		if .ACTIVE in mu.header(ctx, "Tree and Text", {.EXPANDED}) {
-			mu.layout_row(ctx, {140, -1})
-			mu.layout_begin_column(ctx)
-			if .ACTIVE in mu.treenode(ctx, "Test 1") {
-				if .ACTIVE in mu.treenode(ctx, "Test 1a") {
-					mu.label(ctx, "Hello")
-					mu.label(ctx, "world")
-				}
-				if .ACTIVE in mu.treenode(ctx, "Test 1b") {
-					if .SUBMIT in mu.button(ctx, "Button 1") { write_log("Pressed button 1") }
-					if .SUBMIT in mu.button(ctx, "Button 2") { write_log("Pressed button 2") }
-				}
-			}
-			if .ACTIVE in mu.treenode(ctx, "Test 2") {
-				mu.layout_row(ctx, {53, 53})
-				if .SUBMIT in mu.button(ctx, "Button 3") { write_log("Pressed button 3") }
-				if .SUBMIT in mu.button(ctx, "Button 4") { write_log("Pressed button 4") }
-				if .SUBMIT in mu.button(ctx, "Button 5") { write_log("Pressed button 5") }
-				if .SUBMIT in mu.button(ctx, "Button 6") { write_log("Pressed button 6") }
-			}
-			if .ACTIVE in mu.treenode(ctx, "Test 3") {
-				@static checks := [3]bool{true, false, true}
-				mu.checkbox(ctx, "Checkbox 1", &checks[0])
-				mu.checkbox(ctx, "Checkbox 2", &checks[1])
-				mu.checkbox(ctx, "Checkbox 3", &checks[2])
-
+            mu.layout_begin_column(ctx)
+			{
+				mu.layout_row(ctx, {0, -1}, 0)
+				mu.label(ctx, "Throttle:"); zero_one_slider(ctx, &game.throttle)
 			}
 			mu.layout_end_column(ctx)
 
-			mu.layout_begin_column(ctx)
-			mu.layout_row(ctx, {-1})
-			mu.text(ctx,
-				"Lorem ipsum dolor sit amet, consectetur adipiscing "+
-				"elit. Maecenas lacinia, sem eu lacinia molestie, mi risus faucibus "+
-				"ipsum, eu varius magna felis a nulla.",
-			)
-			mu.layout_end_column(ctx)
-		}
+        }
+		if .ACTIVE in mu.header(ctx, "Pitch", {.EXPANDED}) {
+			mu.layout_row(ctx, {-1, -1, -1}, 68)
 
-		if .ACTIVE in mu.header(ctx, "Background Colour", {.EXPANDED}) {
-			mu.layout_row(ctx, {-78, -1}, 68)
 			mu.layout_begin_column(ctx)
 			{
 				mu.layout_row(ctx, {46, -1}, 0)
-				mu.label(ctx, "Red:");   u8_slider(ctx, &g.state.bg.r, 0, 255)
-				mu.label(ctx, "Green:"); u8_slider(ctx, &g.state.bg.g, 0, 255)
-				mu.label(ctx, "Blue:");  u8_slider(ctx, &g.state.bg.b, 0, 255)
+				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[0].Kp)
+				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[0].Ki)
+				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[0].Kd)
+                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[0].setpoint, lo=-math.PI, hi=math.PI)
+
+                game.pid[1].Kp = game.pid[0].Kp
+                game.pid[1].Ki = game.pid[0].Ki
+                game.pid[1].Kd = game.pid[0].Kd
 			}
 			mu.layout_end_column(ctx)
 
-			r := mu.layout_next(ctx)
-			mu.draw_rect(ctx, r, g.state.bg)
-			mu.draw_box(ctx, mu.expand_rect(r, 1), ctx.style.colors[.BORDER])
-			mu.draw_control_text(ctx, fmt.tprintf("#%02x%02x%02x", g.state.bg.r, g.state.bg.g, g.state.bg.b), r, .TEXT, {.ALIGN_CENTER})
+            mu.layout_row(ctx, {-1}, 20)
+            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[0].output))
+            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[0].error))
+		}
+
+        if .ACTIVE in mu.header(ctx, "Roll", {.EXPANDED}) {
+			mu.layout_row(ctx, {-1, -1, -1}, 68)
+
+			mu.layout_begin_column(ctx)
+			{
+				mu.layout_row(ctx, {46, -1}, 0)
+				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[1].Kp)
+				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[1].Ki)
+				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[1].Kd)
+                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[1].setpoint, lo=-math.PI, hi=math.PI)
+
+                game.pid[0].Kp = game.pid[1].Kp
+                game.pid[0].Ki = game.pid[1].Ki
+                game.pid[0].Kd = game.pid[1].Kd
+			}
+			mu.layout_end_column(ctx)
+
+            mu.layout_row(ctx, {-1}, 20)
+            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[1].output))
+            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[1].error))
+		}
+
+        if .ACTIVE in mu.header(ctx, "Yaw", {.EXPANDED}) {
+			mu.layout_row(ctx, {-1, -1, -1}, 68)
+
+			mu.layout_begin_column(ctx)
+			{
+				mu.layout_row(ctx, {46, -1}, 0)
+				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[2].Kp)
+				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[2].Ki)
+				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[2].Kd)
+                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[2].setpoint, lo=-math.PI, hi=math.PI)
+			}
+			mu.layout_end_column(ctx)
+
+            mu.layout_row(ctx, {-1}, 20)
+            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[2].output))
+            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[2].error))
 		}
 	}
 
-
-
-	if mu.window(ctx, "Log Window", {350, 40, 300, 200}, opts) {
-		mu.layout_row(ctx, {-1}, -28)
-		mu.begin_panel(ctx, "Log")
-		mu.layout_row(ctx, {-1}, -1)
-		mu.text(ctx, read_log())
-		if g.state.log_buf_updated {
-			panel := mu.get_current_container(ctx)
-			panel.scroll.y = panel.content_size.y
-			g.state.log_buf_updated = false
-		}
-		mu.end_panel(ctx)
-
-		@static buf: [128]byte
-		@static buf_len: int
-		submitted := false
-		mu.layout_row(ctx, {-70, -1})
-		if .SUBMIT in mu.textbox(ctx, buf[:], &buf_len) {
-			mu.set_focus(ctx, ctx.last_id)
-			submitted = true
-		}
-		if .SUBMIT in mu.button(ctx, "Submit") {
-			submitted = true
-		}
-		if submitted {
-			write_log(string(buf[:buf_len]))
-			buf_len = 0
-		}
-	}
-
-	if mu.window(ctx, "Style Window", {350, 250, 300, 240}) {
-		@static colors := [mu.Color_Type]string{
-			.TEXT         = "text",
-			.BORDER       = "border",
-			.WINDOW_BG    = "window bg",
-			.TITLE_BG     = "title bg",
-			.TITLE_TEXT   = "title text",
-			.PANEL_BG     = "panel bg",
-			.BUTTON       = "button",
-			.BUTTON_HOVER = "button hover",
-			.BUTTON_FOCUS = "button focus",
-			.BASE         = "base",
-			.BASE_HOVER   = "base hover",
-			.BASE_FOCUS   = "base focus",
-			.SCROLL_BASE  = "scroll base",
-			.SCROLL_THUMB = "scroll thumb",
-			.SELECTION_BG = "selection bg",
+    if mu.window(ctx, "Controls", {0, 0, 300, 300}, opts) {
+        mu.layout_row(ctx, {-1, -1, -1}, 68)
+        mu.layout_begin_column(ctx)
+		{
+			mu.layout_row(ctx, {46, -1}, 0)
+			mu.label(ctx, "Yaw:"); zero_one_slider(ctx, &game.view_yaw, lo=-math.PI, hi=math.PI, future=false)
+            mu.label(ctx, "Pitch:"); zero_one_slider(ctx, &game.view_pitch, lo=-math.PI/2, hi=math.PI/2, future=false)
 		}
 
-		sw := i32(f32(mu.get_current_container(ctx).body.w) * 0.14)
-		mu.layout_row(ctx, {80, sw, sw, sw, sw, -1})
-		for label, col in colors {
-			mu.label(ctx, label)
-			u8_slider(ctx, &ctx.style.colors[col].r, 0, 255)
-			u8_slider(ctx, &ctx.style.colors[col].g, 0, 255)
-			u8_slider(ctx, &ctx.style.colors[col].b, 0, 255)
-			u8_slider(ctx, &ctx.style.colors[col].a, 0, 255)
-			mu.draw_rect(ctx, mu.layout_next(ctx), ctx.style.colors[col])
-		}
-	}
+        mu.layout_end_column(ctx)
+
+        mu.layout_row(ctx, {-1}, 20)
+        if mu.Result.SUBMIT in mu.button(ctx, "Pause") {
+            game.paused = !game.paused
+        }
+        if mu.Result.SUBMIT in mu.button(ctx, "Slomo") {
+            game.slomo = !game.slomo
+        }
+        if mu.Result.SUBMIT in mu.button(ctx, "Slomo") {
+            game.loop = !game.loop
+        }
+        if mu.Result.SUBMIT in mu.button(ctx, "Restart") {
+            reset(game)
+        }
+        if mu.Result.SUBMIT in mu.button(ctx, "Full Restart") {
+            reset(game, true)
+        }
+
+    }
 }
