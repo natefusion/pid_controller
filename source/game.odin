@@ -610,34 +610,6 @@ calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
     return
 }
 
-clamp_motor_speed :: proc(a, b: ^f64) {
-    compare :: proc(x, y: f64) -> (x1, y1: f64) {
-        if x > 1 {
-            extra := x - 1
-            x1 = 1
-            y1 = y - extra
-            if y1 < 0 do y1 = 0
-        } else if x < 0 {
-            extra := math.abs(x)
-            x1 = 0
-            y1 = y + extra
-            if y1 > 1 do y1 = 1
-        } else {
-            x1 = x
-            y1 = y
-        }
-        return
-    }
-
-    a1, b1 := compare(a^, b^)
-    b2, a2 := compare(b1, a1)
-    assert(a2 <= 1 && a2 >= 0)
-    assert(b2 <= 1 && b2 >= 0)
-
-    a^ = a2
-    b^ = b2
-}
-
 handle_pid3d :: proc(g: ^Game_3D) {
     for i in 0..<3 do update_pid(g.gyro[i], &g.pid[i], g.dt)
 
