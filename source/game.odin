@@ -912,7 +912,7 @@ micro_ui_init :: proc() {
 	// defer rl.UnloadRenderTexture(g.state.atlas_texture)
 
 	image := rl.GenImageColor(c.int(mu.DEFAULT_ATLAS_WIDTH), c.int(mu.DEFAULT_ATLAS_HEIGHT), rl.Color{0, 0, 0, 0})
-	// defer rl.UnloadImage(image)
+	defer rl.UnloadImage(image)
 
 	for alpha, i in mu.default_atlas_alpha {
 		x := i % mu.DEFAULT_ATLAS_WIDTH
@@ -933,7 +933,8 @@ micro_ui_init :: proc() {
 game_init_window :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
 	rl.InitWindow(WIDTH, HEIGHT, "Pid Controller")
-	rl.SetTargetFPS(60)
+    fps := rl.GetMonitorRefreshRate(rl.GetCurrentMonitor())
+	rl.SetTargetFPS(fps)
 	rl.SetExitKey(nil)
     // rl.HideCursor()
     // rl.DisableCursor()
@@ -1164,7 +1165,7 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
         if mu.Result.SUBMIT in mu.button(ctx, "Slomo") {
             game.slomo = !game.slomo
         }
-        if mu.Result.SUBMIT in mu.button(ctx, "Slomo") {
+        if mu.Result.SUBMIT in mu.button(ctx, "Loop") {
             game.loop = !game.loop
         }
         if mu.Result.SUBMIT in mu.button(ctx, "Restart") {
