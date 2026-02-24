@@ -466,8 +466,6 @@ update_gyro :: proc(g: ^Game_3D) {
     s := drone_side(g)
     f := drone_front(g)
 
-    g.prev_gyro = g.gyro
-
     fc := f - c
     sc := s - c
     g.gyro[0] = linalg.angle_between(fc.yz, [2]f64{0, -1}) - math.PI / 2
