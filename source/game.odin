@@ -147,7 +147,7 @@ Link :: struct {
 
 Super_Particle :: [6]Link
 
-Recording_Size :: 1000
+Recording_Size :: 2000
 
 PID_Controller :: struct {
     Kp: f64,
@@ -375,6 +375,10 @@ update_pid :: proc(measured_value: f64, pid: ^PID_Controller, dt: f64) {
     pid.output += linalg.dot(pid.A, pid.error)
 }
 
+update_pids :: proc(g: ^Game_3D) {
+    for i in 0..<3 do update_pid(g.gyro[i], &g.pid[i], g.dt)
+}
+
 draw_pid_stats :: proc(pid: ^PID_Controller, start_y: i32 = 10) -> (end_y: i32) {
     end_y = start_y
     
@@ -462,20 +466,14 @@ update_gyro :: proc(g: ^Game_3D) {
     s := drone_side(g)
     f := drone_front(g)
 
+    g.prev_gyro = g.gyro
+
     fc := f - c
     sc := s - c
     g.gyro[0] = linalg.angle_between(fc.yz, [2]f64{0, -1}) - math.PI / 2
     g.gyro[1] = linalg.angle_between(sc.xz, [2]f64{0, -1}) - math.PI / 2
     
     g.gyro[2] = linalg.angle_between(sc.xy, [2]f64{1, 0}) * math.sign(linalg.cross(sc.xy, [2]f64{1, 0}))
-    
-    // expanded rotation matrix
-    // rotate pitch and roll by 45 deg
-    rot_amount := math.PI / 4 - (g.gyro[2])
-    new_pitch := g.gyro[0] * math.cos(rot_amount) - g.gyro[1] * math.sin(rot_amount)
-    new_roll :=  g.gyro[0] * math.sin(rot_amount) + g.gyro[1] * math.cos(rot_amount)
-    g.gyro[0] = new_pitch
-    g.gyro[1] = new_roll
 }
 
 // https://web.mit.edu/16.unified/www/FALL/thermodynamics/notes/node86.html
@@ -504,7 +502,7 @@ calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
 }
 
 handle_pid3d :: proc(g: ^Game_3D) {
-    for i in 0..<3 do update_pid(g.gyro[i], &g.pid[i], g.dt)
+    update_pids(g)
     for &p, i in g.pid {
         p.data[p.data_idx] = g.gyro[i]
         // p.io[p.data_idx] = g.gyro[i] == 0 ? 0 : complex(p.output / g.gyro[i], 0)
@@ -522,10 +520,10 @@ handle_pid3d :: proc(g: ^Game_3D) {
     ro := clamp(g.pid[1].output, -1, 1)
     yo := clamp(g.pid[2].output, -1, 1)
 
-    ps[0].motor_speed = g.throttle + ro + ps[0].prop_spin_dir * yo
-    ps[1].motor_speed = g.throttle + po + ps[1].prop_spin_dir * yo
-    ps[2].motor_speed = g.throttle - po + ps[2].prop_spin_dir * yo
-    ps[3].motor_speed = g.throttle - ro + ps[3].prop_spin_dir * yo
+    ps[0].motor_speed = g.throttle + po + ro + ps[0].prop_spin_dir * yo // front right
+    ps[1].motor_speed = g.throttle + po - ro + ps[1].prop_spin_dir * yo // front left
+    ps[2].motor_speed = g.throttle - po + ro + ps[2].prop_spin_dir * yo // back right
+    ps[3].motor_speed = g.throttle - po - ro + ps[3].prop_spin_dir * yo // back left
 
     c := drone_center(g)
     for &p in ps {
@@ -854,9 +852,6 @@ show_future_events_thread :: proc() {
     g.running_thread = true
     defer g.running_thread = false
     
-    fmt.println("Starting Thread!")
-    defer fmt.println("Just finished the thread... ")
-    
     new_game := new_clone(g.g3d)
     defer free(new_game)
     
@@ -1095,9 +1090,9 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[0].Kd)
                 mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[0].setpoint, lo=-math.PI, hi=math.PI)
 
-                game.pid[1].Kp = game.pid[0].Kp
-                game.pid[1].Ki = game.pid[0].Ki
-                game.pid[1].Kd = game.pid[0].Kd
+                // game.pid[1].Kp = game.pid[0].Kp
+                // game.pid[1].Ki = game.pid[0].Ki
+                // game.pid[1].Kd = game.pid[0].Kd
 			}
 			mu.layout_end_column(ctx)
 
@@ -1117,9 +1112,9 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[1].Kd)
                 mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[1].setpoint, lo=-math.PI, hi=math.PI)
 
-                game.pid[0].Kp = game.pid[1].Kp
-                game.pid[0].Ki = game.pid[1].Ki
-                game.pid[0].Kd = game.pid[1].Kd
+                // game.pid[0].Kp = game.pid[1].Kp
+                // game.pid[0].Ki = game.pid[1].Ki
+                // game.pid[0].Kd = game.pid[1].Kd
 			}
 			mu.layout_end_column(ctx)
 
