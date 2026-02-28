@@ -119,10 +119,9 @@ Edit_Mode :: enum {
 }
 
 Pid_Type :: enum {
-    Pitch,
     Roll,
+    Pitch,
     Yaw,
-    None,
 }
 
 View_Mode :: enum {
@@ -133,6 +132,7 @@ Particle :: struct {
     motor_speed: f64,
     tangential_force : [3]f64,
     prop_force : [3]f64,
+    total_force : [3]f64,
     prop_spin_dir : f64,
     position_old : [3]f64,
     position : [3]f64,
@@ -153,20 +153,16 @@ PID_Controller :: struct {
     Kp: f64,
     Ki: f64,
     Kd: f64,
-
-    // Ti: f64,
-    // Td: f64,
-    // Ku: f64,
-    // Tu: f64,
+    
+    integral: f64,
+    prev_err: f64,
+    
+    setpoint: f64,
+    integral_limit: f64,
+    output: f64,
 
     data: [Recording_Size]f64,
-    // io: [Recording_Size]complex64,
     data_idx: int,
-
-    setpoint: f64,
-    A: [3]f64,
-    error: [3]f64,
-    output: f64,
 }
 
 Game_3D :: struct {
@@ -174,10 +170,10 @@ Game_3D :: struct {
     particles : [4]Particle,
     camera: rl.Camera3D,
     gyro : [3]f64,
-    pid : [3]PID_Controller,
+    prev_gyro : [3]f64,
+    pid : [Pid_Type]PID_Controller,
     throttle : f64,
     edit: Edit_Mode,
-    selected_pid: Pid_Type,
     paused: bool,
     view_mode: View_Mode,
     slomo: bool,
@@ -187,6 +183,10 @@ Game_3D :: struct {
     trajectory_idx: int,
     view_yaw : f64,
     view_pitch : f64,
+    position: [3]f64,
+    prev_position: [3]f64,
+    velocity: [3]f64,
+    acceleration: [3]f64,
 }
 
 Game_Memory :: struct {
@@ -194,6 +194,7 @@ Game_Memory :: struct {
     state : MUI_State,
     g3d : Game_3D,
     running_thread: bool,
+    fps: i32,
 }
 
 g: ^Game_Memory
@@ -254,6 +255,9 @@ set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
     g.trajectory = 0
     g.trajectory_idx = 0
     g.view_mode = .Follow
+
+    g.position = drone_center(g)
+    g.prev_position = g.position
 }
 
 reset :: proc(g: ^Game_3D, hard: bool = false) {
@@ -271,50 +275,75 @@ init_pid :: proc(using pid: ^PID_Controller, _Kp: f64 = 0.0, _Ki: f64 = 0.0, _Kd
     Ki = _Ki
     Kd = _Kd
     setpoint = 0.0
-    A = {
-        Kp + Ki*dt + Kd/dt,
-        -Kp - 2*Kd/dt,
-        Kd/dt,
-    }
-    error = 0
+    prev_err = 0
     output = 0
+    integral = 0
+    integral_limit = 25
 }
 
 init_pids :: proc(g: ^Game_3D) {
-    init_pid(&g.pid[0], 0.4, 0.3, 0.1, g.dt)
-    init_pid(&g.pid[1], 0.4, 0.3, 0.1, g.dt)
-    init_pid(&g.pid[2], 0.7, 0.09, 0.0003, g.dt)
+    init_pid(&g.pid[.Roll], 0.4, 0.3, 0.1, g.dt)
+    init_pid(&g.pid[.Pitch], 0.4, 0.3, 0.1, g.dt)
+    init_pid(&g.pid[.Yaw], 0.7, 0.09, 0.0003, g.dt)
 }
 
 reset_pid :: proc(using pid: ^PID_Controller) {
-    error = 0
+    prev_err = 0
+    integral = 0
     output = 0
 }
 
-update_pid :: proc(measured_value: f64, pid: ^PID_Controller, dt: f64) {
-    pid.A[0] = pid.Kp + pid.Ki*dt + pid.Kd/dt
-    pid.A[1] = -pid.Kp - 2*pid.Kd/dt
-    pid.A[2] = pid.Kd / dt
-    pid.error[2] = pid.error[1]
-    pid.error[1] = pid.error[0]
-    pid.error[0] = pid.setpoint - measured_value
-    pid.error = linalg.clamp(pid.error, -1, 1)
-    pid.output += linalg.dot(pid.A, pid.error)
+MIN_THROTTLE :: 0.6
+
+update_pid_angle :: proc (p: ^PID_Controller, angle, rate, throttle, dt: f64) {
+    err := p.setpoint - angle
+
+    if throttle <= MIN_THROTTLE {
+        p.integral = 0
+    } else {
+        p.integral += err * dt
+        p.integral = clamp(p.integral, -p.integral_limit, p.integral_limit)
+    }
+
+    derivative := rate
+    p.output = p.Kp*err + p.Ki*p.integral + p.Kd*derivative
+    p.output = clamp(p.output, -1.0, 1.0)
+
+    p.prev_err = err
 }
 
-update_pids :: proc(g: ^Game_3D) {
-    for i in 0..<3 {
-        update_pid(g.gyro[i], &g.pid[i], g.dt)
-        g.pid[i].data[g.pid[i].data_idx] = g.gyro[i]
-        g.pid[i].data_idx = (g.pid[i].data_idx + 1) % len(g.pid[i].data)
+update_pid_rate :: proc (p: ^PID_Controller, rate, throttle, dt: f64) {
+    err := p.setpoint - rate
+
+    if throttle <= MIN_THROTTLE {
+        p.integral = 0
+    } else {
+        p.integral += err * dt
+        p.integral = clamp(p.integral, -p.integral_limit, p.integral_limit)
+    }
+
+    derivative := (err - p.prev_err) / dt
+    p.output = p.Kp*err + p.Ki*p.integral + p.Kd*derivative;
+    p.output = clamp(p.output, -1.0 , 1.0);
+
+    p.prev_err = err
+}
+
+update_pids :: proc(using g: ^Game_3D) {
+    update_pid_angle(&pid[.Roll], gyro.x, (gyro.x - prev_gyro.x)/dt, throttle, dt)
+    update_pid_angle(&pid[.Pitch], gyro.y, (gyro.y - prev_gyro.y)/dt, throttle, dt)
+    update_pid_rate(&pid[.Yaw], (gyro.z - prev_gyro.z)/dt, throttle, dt)
+
+    for &p, i in pid {
+        p.data[p.data_idx] = gyro[int(i)]
+        p.data_idx = (p.data_idx + 1) % len(p.data)
     }
 }
 
 update_particle :: proc(p: ^Particle, dt: f64) {
     gravity :: [3]f64{0, 0, -9.81}
-    force := p.tangential_force + p.prop_force
     temp := p.position
-    a := force / p.mass + gravity
+    a := p.total_force / p.mass + gravity
     x := a * dt * dt
     p.position = 2*p.position - p.position_old + x
     p.position_old = temp
@@ -376,13 +405,21 @@ update_gyro :: proc(g: ^Game_3D) {
     c := drone_center(g)
     s := drone_side(g)
     f := drone_front(g)
-
     fc := f - c
     sc := s - c
-    g.gyro[0] = linalg.angle_between(fc.yz, [2]f64{0, -1}) - math.PI / 2
-    g.gyro[1] = linalg.angle_between(sc.xz, [2]f64{0, -1}) - math.PI / 2
-    
-    g.gyro[2] = linalg.angle_between(sc.xy, [2]f64{1, 0}) * math.sign(linalg.cross(sc.xy, [2]f64{1, 0}))
+
+    g.prev_gyro = g.gyro
+    g.gyro.x = linalg.angle_between(sc.xz, [2]f64{0, -1}) - math.PI / 2
+    g.gyro.y = linalg.angle_between(fc.yz, [2]f64{0, -1}) - math.PI / 2
+    g.gyro.z = linalg.angle_between(sc.xy, [2]f64{1, 0}) * math.sign(linalg.cross(sc.xy, [2]f64{1, 0}))
+
+    prev_pos_diff := g.position - g.prev_position
+    g.prev_position = g.position
+    g.position = c
+
+    pos_diff := g.position - g.prev_position
+    g.velocity = pos_diff / (g.dt * PIXELS_PER_M)
+    g.acceleration = (pos_diff - prev_pos_diff) / (g.dt * g.dt * PIXELS_PER_M)
 }
 
 // https://web.mit.edu/16.unified/www/FALL/thermodynamics/notes/node86.html
@@ -413,9 +450,9 @@ handle_pid3d :: proc(g: ^Game_3D) {
     update_pids(g)
 
     ps := &g.particles
-    po := clamp(g.pid[0].output, -1, 1)
-    ro := clamp(g.pid[1].output, -1, 1)
-    yo := clamp(g.pid[2].output, -1, 1)
+    po := g.pid[.Pitch].output
+    ro := g.pid[.Roll].output
+    yo := g.pid[.Yaw].output
 
     ps[0].motor_speed = g.throttle + po + ro + ps[0].prop_spin_dir * yo // front right
     ps[1].motor_speed = g.throttle + po - ro + ps[1].prop_spin_dir * yo // front left
@@ -429,6 +466,7 @@ handle_pid3d :: proc(g: ^Game_3D) {
 
         plane := linalg.normalize(linalg.cross(p.position - c, drone_normal(g)))
         p.tangential_force = p.prop_spin_dir * plane * calc_tangential_force(p.motor_speed)
+        p.total_force = p.tangential_force + p.prop_force
     }
 }
 
@@ -487,11 +525,6 @@ draw_trajectory :: proc(g: ^Game_3D) {
         v = cast_f32(traj[idx])
         rl.DrawLine3D(pv, v, rl.PINK)
     }
-}
-
-draw_gyro :: proc(gyro: [3]f64) {
-    gyro_deg := gyro * 180 / math.PI
-    rl.DrawText(fmt.caprintf("Pitch: %f\nRoll:   %f\nYaw:   %f", gyro_deg.x, gyro_deg.y, gyro_deg.z), 10, 10, 20, rl.BLACK)
 }
 
 draw_normal :: proc(g: ^Game_3D) {
@@ -650,14 +683,14 @@ game_3d :: proc(game: ^Game_3D) {
     handle_input_3d(game)
     
     if game.loop {
-        if game.pid[0].data_idx == len(game.pid[0].data) - 1 {
+        if game.pid[.Roll].data_idx == len(game.pid[.Roll].data) - 1 {
             reset(game)
         }
     }
     if game.slomo {
         game.dt = 0.001
     } else {
-        game.dt = f64(rl.GetFrameTime())
+        game.dt = 1.0/f64(g.fps)//f64(rl.GetFrameTime())
     }
 
 }
@@ -763,8 +796,7 @@ game_update :: proc() {
 game_init_window :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
 	rl.InitWindow(WIDTH, HEIGHT, "Pid Controller")
-    fps := rl.GetMonitorRefreshRate(rl.GetCurrentMonitor())
-	rl.SetTargetFPS(fps)
+	rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()))
 	rl.SetExitKey(nil)
     // rl.HideCursor()
     // rl.DisableCursor()
@@ -783,6 +815,7 @@ game_init :: proc() {
 	        bg = {90, 95, 100, 0},
         },
         running_thread = false,
+        fps = rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()),
 	}
 
     micro_ui_init()
@@ -928,11 +961,14 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
         if .ACTIVE in mu.header(ctx, "Drone", {.EXPANDED}) {
             mu.layout_row(ctx, {-1}, 20)
             gyro_deg := game.gyro * 180 / math.PI
-            mu.label(ctx, fmt.tprintf("Pitch: %.3f", gyro_deg[0]))
-            mu.label(ctx, fmt.tprintf("Roll : %.3f", gyro_deg[1]))
-            mu.label(ctx, fmt.tprintf("Yaw  : %.3f", gyro_deg[2]))
+            mu.label(ctx, fmt.tprintf("Pitch: %.3f", gyro_deg.y))
+            mu.label(ctx, fmt.tprintf("Roll : %.3f", gyro_deg.x))
+            mu.label(ctx, fmt.tprintf("Yaw  : %.3f", gyro_deg.z))
 
-            mu.label(ctx, fmt.tprintf("Position: %.3f", drone_center(game)))
+            
+            mu.label(ctx, fmt.tprintf("Position : %.3f", game.position))
+            mu.label(ctx, fmt.tprintf("Velocity: %.3f", game.velocity))
+            mu.label(ctx, fmt.tprintf("Acceleration: %.3f", game.acceleration))
 
             mu.label(ctx, fmt.tprintf("Motor Speed 1: %.3f", game.particles[0].motor_speed))
             mu.label(ctx, fmt.tprintf("Motor Speed 2: %.3f", game.particles[1].motor_speed))
@@ -947,16 +983,19 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 			mu.layout_end_column(ctx)
 
         }
+
+        PID_LO :: -1
+        PID_HI :: 1
 		if .ACTIVE in mu.header(ctx, "Pitch", {.EXPANDED}) {
 			mu.layout_row(ctx, {-1, -1, -1}, 68)
 
 			mu.layout_begin_column(ctx)
 			{
 				mu.layout_row(ctx, {46, -1}, 0)
-				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[0].Kp)
-				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[0].Ki)
-				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[0].Kd)
-                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[0].setpoint, lo=-math.PI, hi=math.PI)
+				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[.Pitch].Kp, PID_LO, PID_HI)
+				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[.Pitch].Ki, PID_LO, PID_HI)
+				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[.Pitch].Kd, PID_LO, PID_HI)
+                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[.Pitch].setpoint, lo=-math.PI, hi=math.PI)
 
                 // game.pid[1].Kp = game.pid[0].Kp
                 // game.pid[1].Ki = game.pid[0].Ki
@@ -965,8 +1004,8 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 			mu.layout_end_column(ctx)
 
             mu.layout_row(ctx, {-1}, 20)
-            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[0].output))
-            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[0].error))
+            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[.Pitch].output))
+            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[.Pitch].prev_err))
 		}
 
         if .ACTIVE in mu.header(ctx, "Roll", {.EXPANDED}) {
@@ -975,10 +1014,10 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 			mu.layout_begin_column(ctx)
 			{
 				mu.layout_row(ctx, {46, -1}, 0)
-				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[1].Kp)
-				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[1].Ki)
-				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[1].Kd)
-                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[1].setpoint, lo=-math.PI, hi=math.PI)
+				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[.Roll].Kp, PID_LO, PID_HI)
+				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[.Roll].Ki, PID_LO, PID_HI)
+				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[.Roll].Kd, PID_LO, PID_HI)
+                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[.Roll].setpoint, lo=-math.PI, hi=math.PI)
 
                 // game.pid[0].Kp = game.pid[1].Kp
                 // game.pid[0].Ki = game.pid[1].Ki
@@ -987,8 +1026,8 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 			mu.layout_end_column(ctx)
 
             mu.layout_row(ctx, {-1}, 20)
-            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[1].output))
-            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[1].error))
+            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[.Roll].output))
+            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[.Roll].prev_err))
 		}
 
         if .ACTIVE in mu.header(ctx, "Yaw", {.EXPANDED}) {
@@ -997,16 +1036,16 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 			mu.layout_begin_column(ctx)
 			{
 				mu.layout_row(ctx, {46, -1}, 0)
-				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[2].Kp)
-				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[2].Ki)
-				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[2].Kd)
-                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[2].setpoint, lo=-math.PI, hi=math.PI)
+				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[.Yaw].Kp, PID_LO, PID_HI)
+				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[.Yaw].Ki, PID_LO, PID_HI)
+				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[.Yaw].Kd, PID_LO, PID_HI)
+                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[.Yaw].setpoint, lo=-math.PI, hi=math.PI)
 			}
 			mu.layout_end_column(ctx)
 
             mu.layout_row(ctx, {-1}, 20)
-            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[2].output))
-            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[2].error))
+            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[.Yaw].output))
+            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[.Yaw].prev_err))
 		}
 	}
 
