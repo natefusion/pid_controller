@@ -198,6 +198,10 @@ Game_Memory :: struct {
 
 g: ^Game_Memory
 
+cast_f32 :: proc(a: [3]f64) -> [3]f32 {
+    return {cast(f32)a[0], cast(f32)a[1], cast(f32)a[2]}
+}
+
 set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
     if hard_reset {
         g.camera = DEFAULT_POS
@@ -252,57 +256,14 @@ set_game_3d_default :: proc(g: ^Game_3D, hard_reset: bool = false) {
     g.view_mode = .Follow
 }
 
-// fft :: proc(x: []complex64) {
-//     N := len(x)
-//     if N == 1 do return
-
-//     x0 := make([]complex64, N/2)
-//     x1 := make([]complex64, N/2)
-//     defer delete(x0)
-//     defer delete(x1)
-    
-//     for i := 0; 2 * i < N - 1; i+=1 {
-//         x0[i] = x[2*i]
-//         x1[i] = x[2*i+1]
-//     }
-
-//     fft(x0)
-//     fft(x1)
-
-//     ang := math.TAU / f64(N)
-//     w := complex64(1)
-//     wn := complex64(complex(math.cos(ang), math.sin(ang)))
-
-//     for i := 0; 2 * i < N - 1; i+=1 {
-//         x[i] = x0[i] + w * x1[i]
-//         x[i + N/2] = x0[i] - w * x1[i]
-//         w *= wn
-//     }
-// }
-
-update_link :: proc(ps: []Particle, link : Link) {
-    p_pos := &ps[link.p].position
-    p1_pos := &ps[link.p1].position
-
-    diff := p_pos^ - p1_pos^
-    dist := linalg.length(diff)
-    diff_factor := (link.length - dist) / dist
-    offset := diff * diff_factor * 0.5
-
-    p_pos^ += offset
-    p1_pos^ -= offset
-}
-
-draw_links :: proc(g: ^Game_3D) {
-    for l in g.drone {
-        rl.DrawLine3D(cast_f32(g.particles[l.p].position), cast_f32(g.particles[l.p1].position), rl.MAGENTA) 
+reset :: proc(g: ^Game_3D, hard: bool = false) {
+    if hard {
+        init_pids(g)
+    } else {
+        for &p in g.pid do reset_pid(&p)
     }
-}
+    set_game_3d_default(g, hard)
 
-init_pids :: proc(g: ^Game_3D) {
-    init_pid(&g.pid[0], 0.4, 0.3, 0.1, g.dt)
-    init_pid(&g.pid[1], 0.4, 0.3, 0.1, g.dt)
-    init_pid(&g.pid[2], 0.7, 0.09, 0.0003, g.dt)
 }
 
 init_pid :: proc(using pid: ^PID_Controller, _Kp: f64 = 0.0, _Ki: f64 = 0.0, _Kd: f64 = 0.0, dt: f64 = 0.01) {
@@ -319,50 +280,16 @@ init_pid :: proc(using pid: ^PID_Controller, _Kp: f64 = 0.0, _Ki: f64 = 0.0, _Kd
     output = 0
 }
 
+init_pids :: proc(g: ^Game_3D) {
+    init_pid(&g.pid[0], 0.4, 0.3, 0.1, g.dt)
+    init_pid(&g.pid[1], 0.4, 0.3, 0.1, g.dt)
+    init_pid(&g.pid[2], 0.7, 0.09, 0.0003, g.dt)
+}
+
 reset_pid :: proc(using pid: ^PID_Controller) {
     error = 0
     output = 0
 }
-
-// autotune_pid :: proc(using pid: ^PID_Controller, dt: f64) {
-//     /* 1. The ratio of output level to input level at low frequencies determines the gain parameter K of the model.
-//        2. Observe the frequency Fu at which the phase passes through -pi radians (-180 degrees). The inverse of this frequency is the period of the oscillation, Tu.
-//        3. Observe the plant gain Kc that occurs at the critical oscillation frequency Fu. The inverse of this is the gain margin Ku.
-//      */
-
-//     fft(io[:])
-//     Ku = 1
-//     Tu = 1
-//     for i := 0; i < len(io)-1; i += 1 {
-//         r1, θ1 := cmplx.polar(io[i])
-//         r2, θ2 := cmplx.polar(io[i+1])
-
-//         a := θ1 <= -math.PI && θ2 >= -math.PI
-//         b := θ1 >= -math.PI && θ2 <= -math.PI
-//         if a || b {
-//             fs := 1/dt
-
-//             Fu := f64(i) * fs / len(io)
-//             Kc := f64(r1)
-
-//             Ku = Kc == 0 ? 1 : 1.0/Kc;
-//             Tu = Fu == 0 ? 1 : 1.0/Fu;
-
-//             fmt.println("Found Ku and Tu!")
-//             break
-//         }
-//         fmt.println(θ1)
-//     }
-    
-//     Kp = (1.0/3.0) * Ku;
-//     Ti = 0.5 * Tu;
-//     Td = (1.0/3.0) * Tu;
-    
-//     Ki = Kp / Ti;
-//     Kd = Kp * Td;
-
-//     io = 0 // fft algo is in place, so reset to allow for more data
-// }
 
 update_pid :: proc(measured_value: f64, pid: ^PID_Controller, dt: f64) {
     pid.A[0] = pid.Kp + pid.Ki*dt + pid.Kd/dt
@@ -376,33 +303,11 @@ update_pid :: proc(measured_value: f64, pid: ^PID_Controller, dt: f64) {
 }
 
 update_pids :: proc(g: ^Game_3D) {
-    for i in 0..<3 do update_pid(g.gyro[i], &g.pid[i], g.dt)
-}
-
-draw_pid_stats :: proc(pid: ^PID_Controller, start_y: i32 = 10) -> (end_y: i32) {
-    end_y = start_y
-    
-    str := fmt.caprintf("PID OUT: %f", pid.output)
-    rl.DrawText(str, 10, end_y, 20, rl.RED)
-
-    end_y += 20
-
-    str = fmt.caprintf("PID ERR: %f", pid.error)
-    rl.DrawText(str, 10, end_y, 20, rl.BLACK)
-
-    end_y += 20
-
-    str = fmt.caprintf("Kp: %f, Ki: %f, Kd: %f", pid.Kp, pid.Ki, pid.Kd)
-    rl.DrawText(str, 10, end_y, 20, rl.BLACK)
-
-    end_y += 20
-
-    str = fmt.caprintf("setpoint: %f", pid.setpoint)
-    rl.DrawText(str, 10, end_y, 20, rl.BLACK)
-
-    end_y += 50
-
-    return
+    for i in 0..<3 {
+        update_pid(g.gyro[i], &g.pid[i], g.dt)
+        g.pid[i].data[g.pid[i].data_idx] = g.gyro[i]
+        g.pid[i].data_idx = (g.pid[i].data_idx + 1) % len(g.pid[i].data)
+    }
 }
 
 update_particle :: proc(p: ^Particle, dt: f64) {
@@ -413,14 +318,6 @@ update_particle :: proc(p: ^Particle, dt: f64) {
     x := a * dt * dt
     p.position = 2*p.position - p.position_old + x
     p.position_old = temp
-    
-}
-
-handle_ground_collision_3d :: proc(p: ^Particle) {
-    if (p.position.z <= 0.1) {
-        p.position.z = 0.1
-        p.position_old.z = 0.1
-    }
 }
 
 update_particles :: proc(particles: []Particle, dt: f64) {
@@ -430,35 +327,49 @@ update_particles :: proc(particles: []Particle, dt: f64) {
     }
 }
 
-reset :: proc(g: ^Game_3D, hard: bool = false) {
-    if hard {
-        init_pids(g)
-    } else {
-        for &p in g.pid do reset_pid(&p)
-    }
-    set_game_3d_default(g, hard)
+update_link :: proc(ps: []Particle, link : Link) {
+    p_pos := &ps[link.p].position
+    p1_pos := &ps[link.p1].position
 
+    diff := p_pos^ - p1_pos^
+    dist := linalg.length(diff)
+    diff_factor := (link.length - dist) / dist
+    offset := diff * diff_factor * 0.5
+
+    p_pos^ += offset
+    p1_pos^ -= offset
 }
 
-handle_input_3d :: proc(game: ^Game_3D) {
-    if rl.IsKeyPressed(.L) {
-        game.paused = !game.paused
-    }
-
-    if rl.IsKeyPressed(.R) {
-        hr := rl.IsKeyDown(.LEFT_SHIFT)
-        reset(game, hr)
+handle_ground_collision_3d :: proc(p: ^Particle) {
+    if (p.position.z <= 0.1) {
+        p.position.z = 0.1
+        p.position_old.z = 0.1
     }
 }
 
-draw_force_vectors :: proc(g: ^Game_3D) {
-    for p in g.particles {
-        end_pos := p.position - p.prop_force*20
-        rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
+drone_center :: proc(g: ^Game_3D) -> [3]f64 {
+    diff1 := g.particles[1].position - g.particles[0].position
+    diff2 := g.particles[2].position - g.particles[0].position
 
-        end_pos = p.position - p.tangential_force
-        rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
-    }
+    return g.particles[0].position + diff1/2 + diff2/2
+}
+
+drone_front :: proc(g: ^Game_3D) -> [3]f64 {
+    diff1 := g.particles[1].position - g.particles[0].position
+    return g.particles[0].position + diff1/2
+}
+
+drone_side :: proc(g: ^Game_3D) -> [3]f64 {
+    diff1 := g.particles[2].position - g.particles[0].position
+    return g.particles[0].position + diff1/2
+}
+
+drone_normal :: proc(g: ^Game_3D) -> [3]f64 {
+    // the positions of the particle should be determined by the normal, not the other way around
+    c := drone_center(g)
+    a := g.particles[0].position - c
+    b := g.particles[1].position - c
+    return linalg.normalize(linalg.cross(a, b))
 }
 
 update_gyro :: proc(g: ^Game_3D) {
@@ -484,7 +395,6 @@ calc_thrust :: proc(val: f64) -> (F_thrust: f64) {
     return
 }
 
-
 calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
     assert(val >= 0.0)
     assert(val <= 1.0)
@@ -501,17 +411,6 @@ calc_tangential_force :: proc(val: f64) -> (F_tangential: f64) {
 
 handle_pid3d :: proc(g: ^Game_3D) {
     update_pids(g)
-    for &p, i in g.pid {
-        p.data[p.data_idx] = g.gyro[i]
-        // p.io[p.data_idx] = g.gyro[i] == 0 ? 0 : complex(p.output / g.gyro[i], 0)
-        // if p.io[p.data_idx] != p.io[p.data_idx] do fmt.println(p.output, g.gyro[i])
-
-        // if p.data_idx == len(p.data) - 1 {
-        //     autotune_pid(&p)
-        // }
-
-        p.data_idx = (p.data_idx + 1) % len(p.data)
-    }
 
     ps := &g.particles
     po := clamp(g.pid[0].output, -1, 1)
@@ -533,6 +432,32 @@ handle_pid3d :: proc(g: ^Game_3D) {
     }
 }
 
+handle_input_3d :: proc(game: ^Game_3D) {
+    if rl.IsKeyPressed(.L) {
+        game.paused = !game.paused
+    }
+
+    if rl.IsKeyPressed(.R) {
+        hr := rl.IsKeyDown(.LEFT_SHIFT)
+        reset(game, hr)
+    }
+}
+
+draw_links :: proc(g: ^Game_3D) {
+    for l in g.drone {
+        rl.DrawLine3D(cast_f32(g.particles[l.p].position), cast_f32(g.particles[l.p1].position), rl.MAGENTA) 
+    }
+}
+
+draw_force_vectors :: proc(g: ^Game_3D) {
+    for p in g.particles {
+        end_pos := p.position - p.prop_force*20
+        rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
+
+        end_pos = p.position - p.tangential_force
+        rl.DrawLine3D(cast_f32(p.position), cast_f32(end_pos), rl.RED)
+    }
+}
 
 draw_drone :: proc(g: ^Game_3D) {
     radius :: 0.5
@@ -567,35 +492,6 @@ draw_trajectory :: proc(g: ^Game_3D) {
 draw_gyro :: proc(gyro: [3]f64) {
     gyro_deg := gyro * 180 / math.PI
     rl.DrawText(fmt.caprintf("Pitch: %f\nRoll:   %f\nYaw:   %f", gyro_deg.x, gyro_deg.y, gyro_deg.z), 10, 10, 20, rl.BLACK)
-}
-
-cast_f32 :: proc(a: [3]f64) -> [3]f32 {
-    return {cast(f32)a[0], cast(f32)a[1], cast(f32)a[2]}
-}
-
-drone_center :: proc(g: ^Game_3D) -> [3]f64 {
-    diff1 := g.particles[1].position - g.particles[0].position
-    diff2 := g.particles[2].position - g.particles[0].position
-
-    return g.particles[0].position + diff1/2 + diff2/2
-}
-
-drone_front :: proc(g: ^Game_3D) -> [3]f64 {
-    diff1 := g.particles[1].position - g.particles[0].position
-    return g.particles[0].position + diff1/2
-}
-
-drone_side :: proc(g: ^Game_3D) -> [3]f64 {
-    diff1 := g.particles[2].position - g.particles[0].position
-    return g.particles[0].position + diff1/2
-}
-
-drone_normal :: proc(g: ^Game_3D) -> [3]f64 {
-    // the positions of the particle should be determined by the normal, not the other way around
-    c := drone_center(g)
-    a := g.particles[0].position - c
-    b := g.particles[1].position - c
-    return linalg.normalize(linalg.cross(a, b))
 }
 
 draw_normal :: proc(g: ^Game_3D) {
@@ -662,21 +558,6 @@ draw_3d :: proc(g: ^Game_3D) {
     draw_trajectory(g)
     rl.EndMode3D()
 
-    // draw_gyro(g.gyro)
-    // end_y : i32 = 100
-    // end_y = draw_pid_stats(&g.pid[0], end_y)
-    // end_y = draw_pid_stats(&g.pid[1], end_y)
-    // end_y = draw_pid_stats(&g.pid[2], end_y)
-    // rl.DrawText(fmt.caprintf("edit  mode: %v", g.edit), 10, end_y, 20, rl.GREEN)
-    // rl.DrawText(fmt.caprintf("selected pid: %v", g.selected_pid), 10, end_y+20, 20, rl.GREEN)
-    // rl.DrawText(fmt.caprintf("Pos %.3f\n", drone_center(g)), 10, end_y+40, 20, rl.GREEN)
-    // for p, i in g.particles {
-    //     rl.DrawText(fmt.caprintf("Motor speed %v: %.3f\n", i, p.motor_speed), 10, end_y+i32(20*(3+i)), 20, rl.GREEN)
-    // }
-
-    // rl.DrawText(fmt.caprintf("Rot: %f", g.pid[2].setpoint * 180 / math.PI), 10, HEIGHT - 60, 20, rl.GREEN)
-    // rl.DrawText(fmt.caprintf("Throttle: %f", g.throttle), 10, HEIGHT - 40, 20, rl.GREEN)
-
     if g.loop do rl.DrawText(fmt.caprintf("[Loop (tm)]"), 230, HEIGHT - 20, 20, rl.GREEN)
     if g.slomo do rl.DrawText(fmt.caprintf("[Slomo (tm)]"), 110, HEIGHT - 20, 20, rl.GREEN)
     if g.paused do rl.DrawText(fmt.caprintf("[Paused]"), 10, HEIGHT - 20, 20, rl.GREEN)
@@ -701,7 +582,6 @@ update_3d :: proc(g: ^Game_3D) {
     g.trajectory[g.trajectory_idx] = drone_center(g)
     g.trajectory_idx += 1
     g.trajectory_idx %= len(g.trajectory)
-    
 
     update_particles(g.particles[:], g.dt)
     for link in g.drone do update_link(g.particles[:], link)
@@ -765,7 +645,7 @@ game_3d :: proc(game: ^Game_3D) {
     micro_ui_stuff(game)
 
     // more micro ui stuff
-    render(game, &g.state.mu_ctx)    // draw_3d(game)
+    render(game, &g.state.mu_ctx)
     
     handle_input_3d(game)
     
@@ -879,49 +759,6 @@ game_update :: proc() {
 	free_all(context.temp_allocator)
 }
 
-micro_ui_init :: proc() {
-    ctx := &g.state.mu_ctx
-	mu.init(ctx,
-		set_clipboard = proc(user_data: rawptr, text: string) -> (ok: bool) {
-			cstr := strings.clone_to_cstring(text)
-			rl.SetClipboardText(cstr)
-			delete(cstr)
-			return true
-		},
-		get_clipboard = proc(user_data: rawptr) -> (text: string, ok: bool) {
-			cstr := rl.GetClipboardText()
-			if cstr != nil {
-				text = string(cstr)
-				ok = true
-			}
-			return
-		},
-	)
-
-	ctx.text_width = mu.default_atlas_text_width
-	ctx.text_height = mu.default_atlas_text_height
-
-	g.state.atlas_texture = rl.LoadRenderTexture(c.int(mu.DEFAULT_ATLAS_WIDTH), c.int(mu.DEFAULT_ATLAS_HEIGHT))
-	// defer rl.UnloadRenderTexture(g.state.atlas_texture)
-
-	image := rl.GenImageColor(c.int(mu.DEFAULT_ATLAS_WIDTH), c.int(mu.DEFAULT_ATLAS_HEIGHT), rl.Color{0, 0, 0, 0})
-	defer rl.UnloadImage(image)
-
-	for alpha, i in mu.default_atlas_alpha {
-		x := i % mu.DEFAULT_ATLAS_WIDTH
-		y := i / mu.DEFAULT_ATLAS_WIDTH
-		color := rl.Color{255, 255, 255, alpha}
-		rl.ImageDrawPixel(&image, c.int(x), c.int(y), color)
-	}
-
-	rl.BeginTextureMode(g.state.atlas_texture)
-	rl.UpdateTexture(g.state.atlas_texture.texture, rl.LoadImageColors(image))
-	rl.EndTextureMode()
-
-	g.state.screen_texture = rl.LoadRenderTexture(g.state.screen_width, g.state.screen_height)
-	// defer rl.UnloadRenderTexture(g.state.screen_texture)
-}
-
 @(export)
 game_init_window :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
@@ -1013,14 +850,47 @@ game_parent_window_size_changed :: proc(w, h: int) {
 	rl.SetWindowSize(i32(w), i32(h))
 }
 
-write_log :: proc(str: string) {
-	g.state.log_buf_len += copy(g.state.log_buf[g.state.log_buf_len:], str)
-	g.state.log_buf_len += copy(g.state.log_buf[g.state.log_buf_len:], "\n")
-	g.state.log_buf_updated = true
-}
+micro_ui_init :: proc() {
+    ctx := &g.state.mu_ctx
+	mu.init(ctx,
+		set_clipboard = proc(user_data: rawptr, text: string) -> (ok: bool) {
+			cstr := strings.clone_to_cstring(text)
+			rl.SetClipboardText(cstr)
+			delete(cstr)
+			return true
+		},
+		get_clipboard = proc(user_data: rawptr) -> (text: string, ok: bool) {
+			cstr := rl.GetClipboardText()
+			if cstr != nil {
+				text = string(cstr)
+				ok = true
+			}
+			return
+		},
+	)
 
-read_log :: proc() -> string {
-	return string(g.state.log_buf[:g.state.log_buf_len])
+	ctx.text_width = mu.default_atlas_text_width
+	ctx.text_height = mu.default_atlas_text_height
+
+	g.state.atlas_texture = rl.LoadRenderTexture(c.int(mu.DEFAULT_ATLAS_WIDTH), c.int(mu.DEFAULT_ATLAS_HEIGHT))
+	// defer rl.UnloadRenderTexture(g.state.atlas_texture)
+
+	image := rl.GenImageColor(c.int(mu.DEFAULT_ATLAS_WIDTH), c.int(mu.DEFAULT_ATLAS_HEIGHT), rl.Color{0, 0, 0, 0})
+	defer rl.UnloadImage(image)
+
+	for alpha, i in mu.default_atlas_alpha {
+		x := i % mu.DEFAULT_ATLAS_WIDTH
+		y := i / mu.DEFAULT_ATLAS_WIDTH
+		color := rl.Color{255, 255, 255, alpha}
+		rl.ImageDrawPixel(&image, c.int(x), c.int(y), color)
+	}
+
+	rl.BeginTextureMode(g.state.atlas_texture)
+	rl.UpdateTexture(g.state.atlas_texture.texture, rl.LoadImageColors(image))
+	rl.EndTextureMode()
+
+	g.state.screen_texture = rl.LoadRenderTexture(g.state.screen_width, g.state.screen_height)
+	// defer rl.UnloadRenderTexture(g.state.screen_texture)
 }
 
 u8_slider :: proc(ctx: ^mu.Context, val: ^u8, lo, hi: u8) -> (res: mu.Result_Set) {
