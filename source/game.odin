@@ -123,6 +123,7 @@ Pid_Type :: enum {
     Pitch,
     Yaw,
     Z_Vel,
+    Z_Pos,
 }
 
 View_Mode :: enum {
@@ -272,11 +273,11 @@ reset :: proc(g: ^Game_3D, hard: bool = false) {
 
 }
 
-init_pid :: proc(using pid: ^PID_Controller, _Kp: f64 = 0.0, _Ki: f64 = 0.0, _Kd: f64 = 0.0) {
+init_pid :: proc(using pid: ^PID_Controller, _Kp: f64 = 0.0, _Ki: f64 = 0.0, _Kd: f64 = 0.0, _setpoint: f64 = 0.0) {
     Kp = _Kp
     Ki = _Ki
     Kd = _Kd
-    setpoint = 0.0
+    setpoint = _setpoint
     prev_err = 0
     output = 0
     integral = 0
@@ -288,6 +289,7 @@ init_pids :: proc(g: ^Game_3D) {
     init_pid(&g.pid[.Pitch], 0.4, 0.3, 0.1)
     init_pid(&g.pid[.Yaw], 0.7, 0.09, 0.0003)
     init_pid(&g.pid[.Z_Vel], 1.0, 0.377, 0.377)
+    init_pid(&g.pid[.Z_Pos], 1.0, 0.0, -1.0, _setpoint=1.5)
 }
 
 reset_pid :: proc(using pid: ^PID_Controller) {
@@ -345,6 +347,19 @@ update_pid_throttle :: proc(p: ^PID_Controller, rate, dt: f64) {
     p.prev_err = err;
 }
 
+update_pid_pos :: proc(p: ^PID_Controller, rate, dt: f64) {
+    err := p.setpoint - rate
+
+    p.integral += err * dt
+    p.integral = clamp(p.integral, -p.integral_limit, p.integral_limit)
+
+    derivative := (err - p.prev_err) / dt
+    p.output = p.Kp*err + p.Ki*p.integral - p.Kd*derivative
+    p.output = clamp(p.output, -1.0, 1.0)
+
+    p.prev_err = err;
+}
+
 add_pid_data_point :: proc(p: ^PID_Controller, y: f64) {
     p.data[p.data_idx] = y
     p.data_idx = (p.data_idx + 1) % len(p.data)
@@ -355,11 +370,13 @@ update_pids :: proc(using g: ^Game_3D) {
     update_pid_angle(&pid[.Pitch], gyro.y, (gyro.y - prev_gyro.y)/dt, throttle, dt)
     update_pid_rate(&pid[.Yaw], (gyro.z - prev_gyro.z)/dt, throttle, dt)
     update_pid_throttle(&pid[.Z_Vel], g.velocity.z, dt)
+    update_pid_pos(&pid[.Z_Pos], g.position.z, dt)
 
     add_pid_data_point(&pid[.Roll], gyro.x)
     add_pid_data_point(&pid[.Pitch], gyro.y)
     add_pid_data_point(&pid[.Yaw], (gyro.z - prev_gyro.z) / dt)
     add_pid_data_point(&pid[.Z_Vel], velocity.z)
+    add_pid_data_point(&pid[.Z_Pos], position.z)
 }
 
 update_particle :: proc(p: ^Particle, dt: f64) {
@@ -478,6 +495,8 @@ handle_pid3d :: proc(g: ^Game_3D) {
     update_pids(g)
 
     ps := &g.particles
+    g.pid[.Z_Vel].setpoint = clamp(g.pid[.Z_Pos].output, -0.3, 0.3)
+    
     g.throttle = g.pid[.Z_Vel].output
     po := g.pid[.Pitch].output
     ro := g.pid[.Roll].output
@@ -621,9 +640,9 @@ draw_3d :: proc(g: ^Game_3D) {
     draw_trajectory(g)
     rl.EndMode3D()
 
-    if g.loop do rl.DrawText(fmt.caprintf("[Loop (tm)]"), 230, HEIGHT - 20, 20, rl.GREEN)
-    if g.slomo do rl.DrawText(fmt.caprintf("[Slomo (tm)]"), 110, HEIGHT - 20, 20, rl.GREEN)
-    if g.paused do rl.DrawText(fmt.caprintf("[Paused]"), 10, HEIGHT - 20, 20, rl.GREEN)
+    if g.loop do rl.DrawText(fmt.ctprintf("[Loop (tm)]"), 230, HEIGHT - 20, 20, rl.GREEN)
+    if g.slomo do rl.DrawText(fmt.ctprintf("[Slomo (tm)]"), 110, HEIGHT - 20, 20, rl.GREEN)
+    if g.paused do rl.DrawText(fmt.ctprintf("[Paused]"), 10, HEIGHT - 20, 20, rl.GREEN)
 
     for &p, i in g.pid {
         rr : f32 : (HEIGHT - 16) / len(g.pid)
@@ -634,7 +653,7 @@ draw_3d :: proc(g: ^Game_3D) {
             height = rr,
         }
 
-        DrawPlotSimple(rec, fmt.caprint(Pid_Type(i)), p.data[:], g.pid[i].setpoint, p.data_idx)
+        DrawPlotSimple(rec, fmt.ctprint(Pid_Type(i)), p.data[:], g.pid[i].setpoint, p.data_idx)
     }
 }
 
@@ -1013,88 +1032,29 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 			mu.layout_end_column(ctx)
 
         }
+        
+        PID_LO :: -2
+        PID_HI :: 2
 
-        PID_LO :: -1
-        PID_HI :: 1
-		if .ACTIVE in mu.header(ctx, "Pitch", {.EXPANDED}) {
-			mu.layout_row(ctx, {-1, -1, -1}, 68)
+        for &p, i in game.pid {
+            if .ACTIVE in mu.header(ctx, fmt.tprint(Pid_Type(i)), {.EXPANDED}) {
+			    mu.layout_row(ctx, {-1, -1, -1}, 68)
 
-			mu.layout_begin_column(ctx)
-			{
-				mu.layout_row(ctx, {46, -1}, 0)
-				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[.Pitch].Kp, PID_LO, PID_HI)
-				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[.Pitch].Ki, PID_LO, PID_HI)
-				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[.Pitch].Kd, PID_LO, PID_HI)
-                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[.Pitch].setpoint, lo=-math.PI, hi=math.PI)
+			    mu.layout_begin_column(ctx)
+			    {
+				    mu.layout_row(ctx, {46, -1}, 0)
+				    mu.label(ctx, "Kp:"); zero_one_slider(ctx, &p.Kp, PID_LO, PID_HI)
+				    mu.label(ctx, "Ki:"); zero_one_slider(ctx, &p.Ki, PID_LO, PID_HI)
+				    mu.label(ctx, "Kd:"); zero_one_slider(ctx, &p.Kd, PID_LO, PID_HI)
+                    mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &p.setpoint, lo=-math.PI, hi=math.PI)
+			    }
+			    mu.layout_end_column(ctx)
 
-                // game.pid[1].Kp = game.pid[0].Kp
-                // game.pid[1].Ki = game.pid[0].Ki
-                // game.pid[1].Kd = game.pid[0].Kd
-			}
-			mu.layout_end_column(ctx)
-
-            mu.layout_row(ctx, {-1}, 20)
-            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[.Pitch].output))
-            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[.Pitch].prev_err))
-		}
-
-        if .ACTIVE in mu.header(ctx, "Roll", {.EXPANDED}) {
-			mu.layout_row(ctx, {-1, -1, -1}, 68)
-
-			mu.layout_begin_column(ctx)
-			{
-				mu.layout_row(ctx, {46, -1}, 0)
-				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[.Roll].Kp, PID_LO, PID_HI)
-				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[.Roll].Ki, PID_LO, PID_HI)
-				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[.Roll].Kd, PID_LO, PID_HI)
-                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[.Roll].setpoint, lo=-math.PI, hi=math.PI)
-
-                // game.pid[0].Kp = game.pid[1].Kp
-                // game.pid[0].Ki = game.pid[1].Ki
-                // game.pid[0].Kd = game.pid[1].Kd
-			}
-			mu.layout_end_column(ctx)
-
-            mu.layout_row(ctx, {-1}, 20)
-            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[.Roll].output))
-            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[.Roll].prev_err))
-		}
-
-        if .ACTIVE in mu.header(ctx, "Yaw", {.EXPANDED}) {
-			mu.layout_row(ctx, {-1, -1, -1}, 68)
-
-			mu.layout_begin_column(ctx)
-			{
-				mu.layout_row(ctx, {46, -1}, 0)
-				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[.Yaw].Kp, PID_LO, PID_HI)
-				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[.Yaw].Ki, PID_LO, PID_HI)
-				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[.Yaw].Kd, PID_LO, PID_HI)
-                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[.Yaw].setpoint, lo=-math.PI, hi=math.PI)
-			}
-			mu.layout_end_column(ctx)
-
-            mu.layout_row(ctx, {-1}, 20)
-            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[.Yaw].output))
-            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[.Yaw].prev_err))
-		}
-
-        if .ACTIVE in mu.header(ctx, "Z_Vel", {.EXPANDED}) {
-			mu.layout_row(ctx, {-1, -1, -1}, 68)
-
-			mu.layout_begin_column(ctx)
-			{
-				mu.layout_row(ctx, {46, -1}, 0)
-				mu.label(ctx, "Kp:"); zero_one_slider(ctx, &game.pid[.Z_Vel].Kp, PID_LO, PID_HI)
-				mu.label(ctx, "Ki:"); zero_one_slider(ctx, &game.pid[.Z_Vel].Ki, PID_LO, PID_HI)
-				mu.label(ctx, "Kd:"); zero_one_slider(ctx, &game.pid[.Z_Vel].Kd, PID_LO, PID_HI)
-                mu.label(ctx, "Setpnt:"); zero_one_slider(ctx, &game.pid[.Z_Vel].setpoint, lo=-math.PI, hi=math.PI)
-			}
-			mu.layout_end_column(ctx)
-
-            mu.layout_row(ctx, {-1}, 20)
-            mu.label(ctx, fmt.tprintf("OUT: %.3f", game.pid[.Z_Vel].output))
-            mu.label(ctx, fmt.tprintf("ERR: %.3f", game.pid[.Z_Vel].prev_err))
-		}
+                mu.layout_row(ctx, {-1}, 20)
+                mu.label(ctx, fmt.tprintf("OUT: %.3f", p.output))
+                mu.label(ctx, fmt.tprintf("ERR: %.3f", p.prev_err))
+		    }
+        }
 	}
 
     if mu.window(ctx, "Controls", {0, 0, 300, 300}, opts) {
