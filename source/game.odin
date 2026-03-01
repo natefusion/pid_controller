@@ -183,6 +183,7 @@ Game_3D :: struct {
     trajectory_idx: int,
     view_yaw : f64,
     view_pitch : f64,
+    zoom: f64,
     position: [3]f64,
     prev_position: [3]f64,
     velocity: [3]f64,
@@ -334,10 +335,18 @@ update_pids :: proc(using g: ^Game_3D) {
     update_pid_angle(&pid[.Pitch], gyro.y, (gyro.y - prev_gyro.y)/dt, throttle, dt)
     update_pid_rate(&pid[.Yaw], (gyro.z - prev_gyro.z)/dt, throttle, dt)
 
-    for &p, i in pid {
-        p.data[p.data_idx] = gyro[int(i)]
-        p.data_idx = (p.data_idx + 1) % len(p.data)
-    }
+    p := &g.pid[.Roll]
+    p.data[p.data_idx] = gyro.x
+    p.data_idx = (p.data_idx + 1) % len(p.data)
+
+    p = &g.pid[.Pitch]
+    p.data[p.data_idx] = gyro.y
+    p.data_idx = (p.data_idx + 1) % len(p.data)
+
+    p = &g.pid[.Yaw]
+    p.data[p.data_idx] = (gyro.z - prev_gyro.z) / dt
+    p.data_idx = (p.data_idx + 1) % len(p.data)
+
 }
 
 update_particle :: proc(p: ^Particle, dt: f64) {
@@ -367,6 +376,12 @@ update_link :: proc(ps: []Particle, link : Link) {
 
     p_pos^ += offset
     p1_pos^ -= offset
+}
+
+update_links :: proc(ps: []Particle, links: []Link) {
+    for _ in 0..<50 {
+        for link in links do update_link(ps[:], link)
+    }
 }
 
 handle_ground_collision_3d :: proc(p: ^Particle) {
@@ -580,6 +595,7 @@ draw_3d :: proc(g: ^Game_3D) {
     }
     rl.CameraYaw(&g.camera, f32(g.view_yaw), true)
     rl.CameraPitch(&g.camera, f32(g.view_pitch), true, true, true)
+    rl.CameraMoveForward(&g.camera, f32(g.zoom), false);
     rl.UpdateCamera(&g.camera, .CUSTOM)
 
     rl.BeginMode3D(g.camera)
@@ -617,7 +633,7 @@ update_3d :: proc(g: ^Game_3D) {
     g.trajectory_idx %= len(g.trajectory)
 
     update_particles(g.particles[:], g.dt)
-    for link in g.drone do update_link(g.particles[:], link)
+    update_links(g.particles[:], g.drone[:])
 }
 
 micro_ui_stuff :: proc(game: ^Game_3D) {
@@ -1056,6 +1072,7 @@ all_windows :: proc(game: ^Game_3D, ctx: ^mu.Context) {
 			mu.layout_row(ctx, {46, -1}, 0)
 			mu.label(ctx, "Yaw:"); zero_one_slider(ctx, &game.view_yaw, lo=-math.PI, hi=math.PI, future=false)
             mu.label(ctx, "Pitch:"); zero_one_slider(ctx, &game.view_pitch, lo=-math.PI/2, hi=math.PI/2, future=false)
+            mu.label(ctx, "Zoom:"); zero_one_slider(ctx, &game.zoom, lo=0, hi=10, future=false)
 		}
 
         mu.layout_end_column(ctx)
